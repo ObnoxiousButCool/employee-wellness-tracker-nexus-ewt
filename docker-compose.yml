@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15.2
+    environment:
+      POSTGRES_DB: ewt
+      POSTGRES_USER: ewt_user
+      POSTGRES_PASSWORD: ewt_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://ewt_user:ewt_password@postgres:5432/ewt
+      SECRET_KEY: local-development-secret
+      CORS_ORIGINS: https://localhost:3000,http://localhost:3000
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+
+  frontend:
+    image: node:18-alpine
+    working_dir: /app/frontend
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app/frontend
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:
+

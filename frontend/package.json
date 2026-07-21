@@ -1,0 +1,14 @@
+{
+  "scripts": {
+    "dev": "next dev next-app",
+    "build": "next build next-app",
+    "start": "next start next-app"
+  },
+  "dependencies": {
+    "next": "13.0.4",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "devDependencies": {}
+}
+
