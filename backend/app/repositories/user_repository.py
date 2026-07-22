@@ -13,7 +13,8 @@ class UserRepository:
 
     def get_by_id(self, user_id):
         """Return a user by primary key."""
-        return User.query.get(user_id)
+        # Defect 9: use the SQLAlchemy session API instead of legacy Query.get.
+        return db.session.get(User, user_id)
 
     def list_all(self):
         """Return all users ordered by username."""
@@ -24,4 +25,3 @@ class UserRepository:
         db.session.add(user)
         db.session.commit()
         return user
-

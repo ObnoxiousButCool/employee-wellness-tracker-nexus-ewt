@@ -11,8 +11,9 @@ auth_bp = Blueprint("auth", __name__)
 def login():
     """Authenticate a user with email and password."""
     payload = request.get_json(silent=True) or {}
-    user = AuthService().authenticate(payload.get("email", ""), payload.get("password", ""))
+    auth = AuthService()
+    user = auth.authenticate(payload.get("email", ""), payload.get("password", ""))
     if not user:
         return jsonify({"error": "invalid credentials"}), 401
-    return jsonify({"user": user.to_dict()})
-
+    # Defect 2: return a signed credential so protected routes can authenticate callers.
+    return jsonify({"user": user.to_dict(), "access_token": auth.issue_token(user)})

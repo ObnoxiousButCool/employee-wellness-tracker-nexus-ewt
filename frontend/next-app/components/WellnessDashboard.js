@@ -1,12 +1,59 @@
+import { useState } from "react";
+
 /**
  * Render a wellness operations dashboard overview.
  */
 export default function WellnessDashboard() {
+  const [entry, setEntry] = useState({
+    stress_level: "4",
+    work_hours: "8",
+    sleep_hours: "7",
+    mood: "focused",
+    energy_level: "7",
+  });
+  const [status, setStatus] = useState({ type: "idle", message: "" });
+
   const metrics = [
     { label: "Average stress", value: "3.2", trend: "Down 8%" },
     { label: "Average sleep", value: "7.1h", trend: "Up 4%" },
     { label: "Energy score", value: "82", trend: "Stable" },
   ];
+
+  const handleFieldChange = (event) => {
+    const { name, value } = event.target;
+    setEntry((currentEntry) => ({ ...currentEntry, [name]: value }));
+  };
+
+  const handleSaveEntry = async () => {
+    setStatus({ type: "saving", message: "Saving entry..." });
+    const accessToken =
+      typeof window !== "undefined" ? window.localStorage.getItem("ewt_access_token") : "";
+    try {
+      const response = await fetch("/api/wellness/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({
+          ...entry,
+          date: new Date().toISOString().slice(0, 10),
+          stress_level: Number(entry.stress_level),
+          work_hours: Number(entry.work_hours),
+          sleep_hours: Number(entry.sleep_hours),
+          energy_level: Number(entry.energy_level),
+        }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.error || "Unable to save entry");
+      }
+      // Defect 13: wire the Save entry button to the wellness API and visible feedback.
+      setStatus({ type: "success", message: "Entry saved" });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
 
   return (
     <main className="dashboard-shell">
@@ -37,29 +84,63 @@ export default function WellnessDashboard() {
           <div className="entry-grid">
             <label>
               Stress level
-              <input type="number" min="1" max="10" defaultValue="4" />
+              <input
+                name="stress_level"
+                type="number"
+                min="1"
+                max="10"
+                value={entry.stress_level}
+                onChange={handleFieldChange}
+              />
             </label>
             <label>
               Work hours
-              <input type="number" min="0" max="24" defaultValue="8" />
+              <input
+                name="work_hours"
+                type="number"
+                min="0"
+                max="24"
+                value={entry.work_hours}
+                onChange={handleFieldChange}
+              />
             </label>
             <label>
               Sleep hours
-              <input type="number" min="0" max="24" defaultValue="7" />
+              <input
+                name="sleep_hours"
+                type="number"
+                min="0"
+                max="24"
+                value={entry.sleep_hours}
+                onChange={handleFieldChange}
+              />
             </label>
             <label>
               Mood
-              <select defaultValue="focused">
+              <select name="mood" value={entry.mood} onChange={handleFieldChange}>
                 <option value="focused">Focused</option>
                 <option value="calm">Calm</option>
                 <option value="stretched">Stretched</option>
               </select>
             </label>
+            <label>
+              Energy level
+              <input
+                name="energy_level"
+                type="number"
+                min="1"
+                max="10"
+                value={entry.energy_level}
+                onChange={handleFieldChange}
+              />
+            </label>
           </div>
-          <button type="button">Save entry</button>
+          <button type="button" onClick={handleSaveEntry} disabled={status.type === "saving"}>
+            {status.type === "saving" ? "Saving..." : "Save entry"}
+          </button>
+          {status.message ? <p className={`form-status ${status.type}`}>{status.message}</p> : null}
         </div>
       </section>
     </main>
   );
 }
-

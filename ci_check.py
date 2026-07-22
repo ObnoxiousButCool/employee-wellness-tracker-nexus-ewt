@@ -9,9 +9,20 @@ import subprocess
 import sys
 
 
-def run(cmd):
-    """Run a shell command and stream captured output."""
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+def run(cmd, root):
+    """Run an argv command and stream captured output."""
+    # Defect 12.1: shell=False avoids command injection from constructed paths.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        cmd,
+        shell=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=root,
+        env=env,
+    )
     if result.stdout:
         print(result.stdout)
     if result.returncode != 0 and result.stderr:
@@ -22,13 +33,13 @@ def run(cmd):
 def pytest_executable(root):
     """Resolve the project virtual environment pytest executable."""
     venv = os.path.join(root, ".venv")
-    windows_pytest = os.path.join(venv, "Scripts", "pytest")
+    windows_pytest = os.path.join(venv, "Scripts", "pytest.exe")
     linux_pytest = os.path.join(venv, "bin", "pytest")
     if os.path.exists(windows_pytest):
-        return windows_pytest
+        return [windows_pytest]
     if os.path.exists(linux_pytest):
-        return linux_pytest
-    return "pytest"
+        return [linux_pytest]
+    return ["pytest"]
 
 
 def validate_syntax(root):
@@ -53,12 +64,11 @@ if __name__ == "__main__":
         print("No test files found - skipping pytest")
         sys.exit(0)
 
-    files_arg = " ".join(f'"{file_path}"' for file_path in test_files)
-    pytest_cmd = f'"{pytest_executable(root_dir)}" {files_arg} --tb=short -q --no-header'
-    rc = run(pytest_cmd)
+    # Defect 12.2: pass paths as argv entries instead of brittle shell quoting.
+    pytest_cmd = [*pytest_executable(root_dir), *test_files, "--tb=short", "-q", "--no-header"]
+    rc = run(pytest_cmd, root_dir)
     if rc == 0:
         print("CI sanity checks passed")
     else:
         print("CI sanity checks failed", file=sys.stderr)
     sys.exit(0 if rc == 0 else 1)
-

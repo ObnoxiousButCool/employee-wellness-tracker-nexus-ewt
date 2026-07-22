@@ -2,7 +2,7 @@
 
 from flask import Blueprint, jsonify, request
 
-from backend.app.services.authentication.auth_service import require_role
+from backend.app.services.authentication.auth_service import ValidationError, require_role
 from backend.app.services.user_management.user_service import UserService
 
 users_bp = Blueprint("users", __name__)
@@ -20,6 +20,9 @@ def list_users():
 def create_user():
     """Create a user account."""
     payload = request.get_json(silent=True) or {}
-    user = UserService().create_user(payload)
+    try:
+        user = UserService().create_user(payload)
+    except ValidationError as exc:
+        # Defect 4: convert service validation failures into controlled 400 responses.
+        return jsonify({"error": exc.errors}), 400
     return jsonify({"user": user.to_dict()}), 201
-

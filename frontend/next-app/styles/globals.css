@@ -26,7 +26,8 @@ select {
   padding: 72px 8vw 48px;
   background:
     linear-gradient(90deg, rgba(13, 44, 39, 0.88), rgba(13, 44, 39, 0.45)),
-    url("https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?auto=format&fit=crop&w=1800&q=80");
+    /* Defect 14: use a local deterministic asset instead of a remote runtime image. */
+    url("/images/wellness-dashboard-hero.svg");
   background-position: center;
   background-size: cover;
   color: #ffffff;
@@ -129,6 +130,25 @@ button {
   padding: 12px 18px;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.form-status {
+  margin: 12px 0 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.form-status.success {
+  color: #0f766e;
+}
+
+.form-status.error {
+  color: #b42318;
+}
+
 @media (max-width: 780px) {
   .hero-band {
     min-height: 50vh;
@@ -146,4 +166,3 @@ button {
     padding-right: 24px;
   }
 }
-
