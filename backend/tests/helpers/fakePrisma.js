@@ -1,0 +1,157 @@
+/**
+ * In-memory stand-in for the subset of the Prisma Client API the admin
+ * controllers use. No real Postgres is available in this environment, so
+ * tests drive the real Express app + validation + serialization code
+ * against this fake instead of mocking the controllers themselves. Error
+ * shapes (P2002 unique violation, P2003 FK violation, P2025 not found)
+ * mirror real Prisma so the controller code under test is identical to
+ * what runs against a live database.
+ */
+
+function matchesWhere(row, where, tables) {
+  if (!where || Object.keys(where).length === 0) return true;
+  if (where.AND) return where.AND.every((clause) => matchesWhere(row, clause, tables));
+  if (where.OR) return where.OR.some((clause) => matchesWhere(row, clause, tables));
+
+  return Object.entries(where).every(([field, condition]) => {
+    const value = row[field];
+    if (condition && typeof condition === "object" && "contains" in condition) {
+      const haystack = condition.mode === "insensitive" ? String(value).toLowerCase() : String(value);
+      const needle = condition.mode === "insensitive" ? condition.contains.toLowerCase() : condition.contains;
+      return haystack.includes(needle);
+    }
+    return value === condition;
+  });
+}
+
+function createFakePrisma({ roles = [], departments = [], users = [] } = {}) {
+  const state = {
+    roles: roles.map((r) => ({ ...r })),
+    departments: departments.map((d) => ({ ...d })),
+    users: users.map((u) => ({ ...u })),
+  };
+  let nextUserId = state.users.reduce((max, u) => Math.max(max, u.id), 0) + 1;
+  let nextDeptId = state.departments.reduce((max, d) => Math.max(max, d.id), 0) + 1;
+
+  function hydrateUser(row) {
+    return {
+      ...row,
+      role: state.roles.find((r) => r.id === row.roleId) || null,
+      department: state.departments.find((d) => d.id === row.departmentId) || null,
+    };
+  }
+
+  return {
+    user: {
+      async findMany({ where = {}, skip = 0, take, orderBy } = {}) {
+        let rows = state.users.filter((u) => matchesWhere(u, where));
+        if (orderBy?.id === "asc") rows = [...rows].sort((a, b) => a.id - b.id);
+        rows = rows.slice(skip, take !== undefined ? skip + take : undefined);
+        return rows.map(hydrateUser);
+      },
+      async count({ where = {} } = {}) {
+        return state.users.filter((u) => matchesWhere(u, where)).length;
+      },
+      async findUnique({ where }) {
+        const row = state.users.find((u) => (where.id !== undefined ? u.id === where.id : u.email === where.email));
+        return row ? hydrateUser(row) : null;
+      },
+      async create({ data }) {
+        if (state.users.some((u) => u.email === data.email)) {
+          const err = new Error("Unique constraint failed on the fields: (`email`)");
+          err.code = "P2002";
+          throw err;
+        }
+        if (!state.roles.some((r) => r.id === data.roleId)) {
+          const err = new Error("Foreign key constraint failed on the field: `roleId`");
+          err.code = "P2003";
+          throw err;
+        }
+        if (data.departmentId != null && !state.departments.some((d) => d.id === data.departmentId)) {
+          const err = new Error("Foreign key constraint failed on the field: `departmentId`");
+          err.code = "P2003";
+          throw err;
+        }
+        const now = new Date();
+        const row = {
+          id: nextUserId++,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+          ...data,
+        };
+        state.users.push(row);
+        return hydrateUser(row);
+      },
+      async update({ where, data }) {
+        const row = state.users.find((u) => u.id === where.id);
+        if (!row) {
+          const err = new Error("Record to update not found.");
+          err.code = "P2025";
+          throw err;
+        }
+        if (data.email !== undefined && state.users.some((u) => u.id !== row.id && u.email === data.email)) {
+          const err = new Error("Unique constraint failed on the fields: (`email`)");
+          err.code = "P2002";
+          throw err;
+        }
+        if (data.roleId !== undefined && !state.roles.some((r) => r.id === data.roleId)) {
+          const err = new Error("Foreign key constraint failed on the field: `roleId`");
+          err.code = "P2003";
+          throw err;
+        }
+        if (data.departmentId != null && !state.departments.some((d) => d.id === data.departmentId)) {
+          const err = new Error("Foreign key constraint failed on the field: `departmentId`");
+          err.code = "P2003";
+          throw err;
+        }
+        Object.assign(row, data, { updatedAt: new Date() });
+        return hydrateUser(row);
+      },
+    },
+    department: {
+      async findMany({ where = {}, orderBy } = {}) {
+        let rows = state.departments.filter((d) => matchesWhere(d, where));
+        if (orderBy?.id === "asc") rows = [...rows].sort((a, b) => a.id - b.id);
+        return rows.map((d) => ({ ...d }));
+      },
+      async findUnique({ where }) {
+        const row = state.departments.find((d) => (where.id !== undefined ? d.id === where.id : d.name === where.name));
+        return row ? { ...row } : null;
+      },
+      async create({ data }) {
+        if (state.departments.some((d) => d.name === data.name)) {
+          const err = new Error("Unique constraint failed on the fields: (`name`)");
+          err.code = "P2002";
+          throw err;
+        }
+        const row = { id: nextDeptId++, isActive: true, ...data };
+        state.departments.push(row);
+        return { ...row };
+      },
+      async update({ where, data }) {
+        const row = state.departments.find((d) => d.id === where.id);
+        if (!row) {
+          const err = new Error("Record to update not found.");
+          err.code = "P2025";
+          throw err;
+        }
+        if (data.name !== undefined && state.departments.some((d) => d.id !== row.id && d.name === data.name)) {
+          const err = new Error("Unique constraint failed on the fields: (`name`)");
+          err.code = "P2002";
+          throw err;
+        }
+        Object.assign(row, data);
+        return { ...row };
+      },
+    },
+    role: {
+      async findMany() {
+        return state.roles.map((r) => ({ ...r }));
+      },
+    },
+    _state: state,
+  };
+}
+
+module.exports = { createFakePrisma };
