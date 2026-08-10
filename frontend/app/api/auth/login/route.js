@@ -11,8 +11,11 @@ const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60; // mirrors the backend JWT's 8h exp
  * talks to the frontend's own origin (avoids CORS, and lets the backend's
  * httpOnly/Secure/SameSite=Strict `ewt_token` cookie be forwarded as-is).
  * On success also sets a same-origin `ewt_session` cookie carrying the
- * non-sensitive claims (userId, role, departmentId) so server components
- * (e.g. RoleGuard) can make routing decisions without re-parsing the JWT.
+ * non-sensitive claims (userId, role, departmentId) purely as a display
+ * convenience. This cookie is plain JSON and is NOT trusted for access
+ * control: it is httpOnly so client JS can't read it, but it is not signed,
+ * so it must never gate a route. RoleGuard/`getSession()` (see lib/session.js)
+ * authorize exclusively off the backend-signed `ewt_token` JWT relayed below.
  */
 export async function POST(request) {
   let body;

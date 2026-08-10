@@ -63,10 +63,13 @@ frontend/
     LogoutButton.jsx            # client component: calls /api/auth/logout, redirects to /login
   lib/
     roles.js                  # ROLES, ROLE_LANDING_PATHS, getLandingPathForRole, resolveAccess
-    session.js                 # SESSION_COOKIE_NAME, parseSessionCookie, getSession (next/headers)
+    session.js                 # AUTH_COOKIE_NAME, SESSION_COOKIE_NAME, parseSessionToken (verifies
+                                # the ewt_token JWT), getSession (next/headers)
   __tests__/
     roles.test.js               # unit tests for getLandingPathForRole / resolveAccess
-    session.test.js             # unit tests for parseSessionCookie
+    session.test.js             # unit tests for parseSessionToken (real + forged/expired JWTs)
+    RoleGuard.test.jsx          # unit tests: redirect on missing/forged/wrong-role token, allow on valid
+    authRoutes.test.js          # unit tests for the login/logout BFF route handlers (mocked fetch)
     LoginForm.test.jsx          # RTL tests: loading/success/401/403/network-error states
 ```
 
@@ -105,11 +108,14 @@ avoiding any need for backend CORS configuration.
 - `POST /api/auth/login` (Next.js route handler) — forwards `{ email, password }` to the
   backend's `POST /api/auth/login` unchanged, relays the backend's `Set-Cookie: ewt_token`
   header verbatim, and additionally sets its own httpOnly `ewt_session` cookie (JSON:
-  `{ userId, role, departmentId }`, 8h maxAge) so server components can make routing decisions
-  without re-parsing the JWT. Passes through the backend's status code and body as-is (200/401/403).
+  `{ userId, role, departmentId }`, 8h maxAge). **`ewt_session` is a non-authoritative display
+  convenience only** — it is unsigned JSON and must never gate access; `RoleGuard`/`getSession()`
+  authorize exclusively by verifying the signed `ewt_token` JWT (shared `JWT_SECRET`, HS256).
+  Passes through the backend's status code and body as-is (200/401/403).
 - `POST /api/auth/logout` (Next.js route handler) — forwards the request cookie header to the
-  backend's `POST /api/auth/logout`, relays any `Set-Cookie` it returns, and clears its own
-  `ewt_session` cookie.
+  backend's `POST /api/auth/logout`, relays any `Set-Cookie` it returns, and unconditionally
+  clears both its own `ewt_session` cookie and `ewt_token` on the frontend origin — even if the
+  backend proxy call itself fails/times out, so the browser is never left half-signed-out.
 
 ## 4. Data Models (cumulative)
 
@@ -190,3 +196,68 @@ and for real. No API contract mismatches were found; the documented `POST /api/a
 `POST /api/auth/logout` shapes matched observed backend behavior exactly. No gaps: this story's
 scope (login, logout, role-guarded landing pages) is fully implemented and verified against the
 real backend.
+
+**Fixes (iteration 2) — frontend:** Addressed all four review findings.
+
+1. *Forgeable session cookie (`frontend/lib/session.js`).* The `ewt_session` cookie is plain,
+   unsigned JSON, so it was possible to set a cookie by that name from a browser dev console (or
+   `curl`) and satisfy `RoleGuard` without ever authenticating. Fixed by changing the actual
+   authorization boundary: `getSession()`/`parseSessionToken()` now verify the **signed
+   `ewt_token` JWT** (HS256, shared `JWT_SECRET`, same secret the backend's
+   `backend/src/config/env.js` signs with) via the `jsonwebtoken` package, rejecting anything
+   whose signature doesn't check out — including a well-formed `{ role: "ADMIN" }` JSON payload
+   with no valid signature. `ewt_session` is kept (the login route still sets it, satisfying the
+   documented BFF contract) but is now explicitly non-authoritative and never read for access
+   control; `RoleGuard` and every route that calls `getSession()` verify `ewt_token` only. Added
+   `jsonwebtoken@^9.0.3` to `frontend/package.json` and `frontend/.env.example` (`JWT_SECRET`,
+   documented as must-match-backend).
+2. *Half-signed-out logout (`frontend/app/api/auth/logout/route.js`).* Previously, if the fetch to
+   the backend's logout endpoint threw (network error/timeout), the route returned 502 immediately
+   without clearing any cookie, leaving `ewt_token` (and `ewt_session`) live in the browser. Fixed
+   by moving cookie clearing outside the try/catch: both `ewt_token` and `ewt_session` are now
+   cleared on the frontend origin unconditionally, and when the backend proxy is unreachable the
+   route still returns `200 { "message": "Logged out locally; the authentication service could
+   not be reached to confirm." }` instead of leaving the client session intact.
+3. *Unsubstantiated verification claim.* Replaced the iteration-1 narrative with concrete evidence
+   (below) from an actual run, plus new automated coverage: `__tests__/session.test.js` now signs
+   real JWTs with `jsonwebtoken` and asserts `parseSessionToken` accepts a correctly-signed token
+   and rejects a wrong-secret forgery, a `none`-algorithm forgery, and an expired token;
+   `__tests__/RoleGuard.test.jsx` (new) drives the actual `RoleGuard` component with a mocked
+   `next/headers`/`next/navigation` and asserts it redirects on no cookie, on a forged
+   base64-JSON cookie presented as `ewt_token`, and on a validly-signed wrong-role token, and
+   renders children only for a validly-signed matching-role token; `__tests__/authRoutes.test.js`
+   (new) drives the real `POST` handlers in `app/api/auth/login/route.js` and
+   `app/api/auth/logout/route.js` against a mocked `fetch` shaped exactly like the documented
+   contract (200/401/403 bodies, `Set-Cookie` headers) and asserts the relayed cookies, and
+   specifically asserts the logout-clears-cookies-even-when-backend-unreachable fix. 26/26 tests
+   pass (`npx vitest run` in `frontend/`), wired into `ci_check.py` (`python ci_check.py` exits 0).
+4. *Package-lock.json exceeding the file-size rule.* Removed `frontend/package-lock.json` from
+   git tracking (`git rm --cached`) and added `package-lock.json` to the root `.gitignore`,
+   matching the convention the backend layer already established for its own lockfile.
+
+**Live end-to-end verification actually performed for this fix round:** the backend layer's
+source is not present on the `story-s1-frontend` branch (it lives on `story-s1-backend`; only
+`backend/package-lock.json` is checked out here), so to get a genuine live backend for this round
+I added a temporary `git worktree` checked out at `story-s1-backend`, ran `npm install` there
+(installed real deps + generated the real Prisma client), and started the actual, unmodified
+`backend/src/app.js` Express app on `localhost:4010` with only `userModel.findByEmail`
+monkeypatched to two in-memory fixture users (mirroring exactly what the backend's own
+`backend/tests/auth.test.js` does) — every other line (bcrypt compare, JWT signing, cookie
+options, Express routing) ran for real. Against that live server, with `BACKEND_URL` pointed at
+`:4010`, I called the frontend's actual `loginPOST`/`logoutPOST` route handlers (not mocks) and
+observed: (1) `admin@ewt.test` / `correct-password` → `200 {"userId":1,"role":"ADMIN",
+"departmentId":3}` with a real backend-issued `ewt_token` in `Set-Cookie`; (2) that real token,
+run through the frontend's own `parseSessionToken`, verified successfully to
+`{userId:1,role:"ADMIN",departmentId:3}`; (3) a forged base64-JSON cookie (`{"userId":99,
+"role":"ADMIN"}`, no signature) was rejected by `parseSessionToken` (returns `null`) — confirming
+the forgery fix against a real signed token from a real server, not just a unit-test double; (4)
+wrong password → `401 {"error":"Invalid credentials"}`; (5) `inactive@ewt.test` → `403
+{"error":"Account is inactive"}`; (6) `POST /api/auth/logout` with the real token → `200
+{"message":"Logged out"}`, with both `ewt_token=;` and `ewt_session=;` clearing `Set-Cookie`
+headers present; (7) repeating logout with `BACKEND_URL` pointed at an unreachable address → still
+`200`, still both cookies cleared, confirming the half-signed-out fix against a real network
+failure. All matched the documented API Contract exactly — no mismatches found. The worktree,
+its `node_modules`, and the temporary verification test file were deleted afterward; none of it
+is part of this PR's diff. No gaps: this story's scope (forgery-resistant session boundary,
+fully-clearing logout, role-guarded landing pages) is fully implemented and verified against a
+real, unmodified backend.
