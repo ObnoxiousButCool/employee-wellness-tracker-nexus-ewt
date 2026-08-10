@@ -53,13 +53,40 @@ def main() -> int:
     # Node syntax check for each layer that declares a package.json.
     for pkg in sorted(ROOT.glob("*/package.json")):
         layer = pkg.parent
-        sources = [
+        plain_js = [
             p for p in layer.rglob("*.js")
             if "node_modules" not in p.parts
         ]
-        for src in sources:
+        for src in plain_js:
             if run(["node", "--check", str(src)]) != 0:
                 failures.append(f"node --check {src.relative_to(ROOT)}")
+
+        # `node --check` cannot parse JSX, so .jsx files need their own
+        # syntax-capable gate. esbuild (a transitive dep of vite/vitest)
+        # ships a binary under node_modules/.bin that parses+transforms JSX
+        # without executing it, so it can be used as a pure syntax check.
+        esbuild = layer / "node_modules" / ".bin" / ("esbuild.cmd" if sys.platform == "win32" else "esbuild")
+        jsx_sources = [
+            p for p in layer.rglob("*.jsx")
+            if "node_modules" not in p.parts
+        ]
+        if jsx_sources and not esbuild.is_file():
+            print(f"[ci] {esbuild} not found - skipping .jsx syntax check for {layer.name}")
+        else:
+            for src in jsx_sources:
+                # esbuild infers the "jsx" loader from the .jsx extension on
+                # its own; passing the file straight through (no bundling,
+                # output discarded) is a pure parse/transform syntax check.
+                result = subprocess.run(
+                    [str(esbuild), str(src)],
+                    cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+                )
+                if result.returncode != 0:
+                    if result.stdout:
+                        print(result.stdout)
+                    if result.stderr:
+                        print(result.stderr, file=sys.stderr)
+                    failures.append(f"esbuild (jsx syntax check) {src.relative_to(ROOT)}")
 
     # Backend Node test suite (node:test), if present.
     backend_tests = ROOT / "backend" / "tests"
