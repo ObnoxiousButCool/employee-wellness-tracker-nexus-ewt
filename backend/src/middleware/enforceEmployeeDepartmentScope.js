@@ -1,4 +1,5 @@
 const asyncHandler = require("../utils/asyncHandler");
+const { isPositiveIntegerString } = require("../utils/validators");
 
 /**
  * Must run after authenticate() + requireRole(["ADMIN", "MANAGER"]).
@@ -9,10 +10,10 @@ const asyncHandler = require("../utils/asyncHandler");
  * downstream controllers don't re-query it.
  */
 const enforceEmployeeDepartmentScope = asyncHandler(async function (req, res, next) {
-  const id = Number.parseInt(req.params.id, 10);
-  if (!Number.isInteger(id)) {
+  if (!isPositiveIntegerString(req.params.id)) {
     return res.status(400).json({ error: "Invalid employee id" });
   }
+  const id = Number.parseInt(req.params.id, 10);
 
   const prisma = req.app.locals.prisma;
   const employee = await prisma.user.findUnique({ where: { id } });

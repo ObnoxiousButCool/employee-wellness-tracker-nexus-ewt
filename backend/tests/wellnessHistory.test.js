@@ -135,6 +135,26 @@ test("GET /api/wellness/history supports sortBy/sortOrder column toggle", async 
   );
 });
 
+test("GET /api/wellness/history returns 400 for a malformed userId instead of coercing it", async () => {
+  const { app, adminToken } = buildApp();
+  const res = await request(app)
+    .get("/api/wellness/history?userId=12abc")
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  assert.equal(res.status, 400);
+  assert.ok(res.body.errors.userId);
+});
+
+test("GET /api/wellness/history returns 400 for a malformed department instead of coercing it", async () => {
+  const { app, adminToken } = buildApp();
+  const res = await request(app)
+    .get("/api/wellness/history?department=2abc")
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  assert.equal(res.status, 400);
+  assert.ok(res.body.errors.department);
+});
+
 test("GET /api/wellness/history returns 400 for an invalid sortBy", async () => {
   const { app, adminToken } = buildApp();
   const res = await request(app)

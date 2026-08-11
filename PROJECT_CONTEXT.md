@@ -650,3 +650,30 @@ computed from the existing `wellness_entries`/`users` tables (S2/S3), not duplic
 
 `node --test` in `backend/`: 47/47 passing (31 prior + 16 new). `python ci_check.py`: 47 backend +
 107 frontend tests, all green.
+
+**Fixes (iteration 2) — backend:** Addressed all three review findings.
+1. *Malformed `userId`/`department`/employee-id inputs were coerced, not rejected.*
+   `validateWellnessHistoryQuery` checked `Number.isInteger(Number.parseInt(query.userId, 10))`,
+   which stops parsing at the first non-digit — `"12abc"` parses to `12` and passes, silently
+   filtering against the wrong id. `enforceEmployeeDepartmentScope.js`'s `:id` path param had the
+   same bug (`/employees/12abc/profile` resolved as employee `12`). Added
+   `isPositiveIntegerString()` to `src/utils/validators.js` (strict `^\d+$` match on the raw
+   string, exported for reuse) and switched `validateWellnessHistoryQuery`'s `userId`/`department`
+   checks and `enforceEmployeeDepartmentScope`'s `req.params.id` check to it; both now return `400`
+   on any non-exact-integer string instead of truncating it.
+2. *Default profile/trend windows weren't calendar-day aligned.* `employeeProfileController.js`'s
+   `daysAgo()` subtracted days from `new Date()` without zeroing the time-of-day, and the default
+   `to` bound was `new Date()` (current instant). Since `wellness_entries.entry_date` is always
+   stored at local midnight (`@db.Date`, per S3), a request made any time after midnight had a
+   `from` bound later than the earliest day's midnight timestamp, silently dropping that day from
+   the default 30d/90d window depending on when the request happened. Fixed `daysAgo()` to zero the
+   time-of-day before subtracting, and added `todayDateOnly()` (also midnight-aligned) for the
+   default `to` bound in both `getProfile` and `getTrend`.
+3. Added regression coverage: `tests/wellnessHistory.test.js` gained 2 cases (malformed `userId`,
+   malformed `department` → `400`), `tests/employeeProfile.test.js` gained 4 cases (malformed
+   employee id on both `:id` routes → `400`; a boundary-day entry — exactly the 30th/oldest day of
+   each default window — present regardless of the current time-of-day, for both `getProfile` and
+   `getTrend`).
+
+`node --test` in `backend/`: 53/53 passing (47 prior + 6 new). `python ci_check.py`: 53 backend +
+107 frontend tests, all green.
