@@ -24,13 +24,16 @@ backend/
     config/env.js, config/prisma.js
     middleware/authenticate.js, middleware/requireRole.js
     controllers/adminUsersController.js, controllers/adminDepartmentsController.js,
-    controllers/adminRolesController.js
+    controllers/adminRolesController.js, controllers/dashboardController.js   # S5
     routes/adminRoutes.js           # mounts /api/admin/* , requires ADMIN
+    routes/dashboardRoutes.js       # mounts /api/dashboard/* , requires ADMIN/MANAGER, S5
     utils/validators.js, utils/pagination.js, utils/asyncHandler.js
+    utils/wellnessScore.js          # computeWellnessScore/classifyWellnessScore, S5
   tests/
     adminUsers.test.js, adminDepartments.test.js, adminRoles.test.js, authMiddleware.test.js
+    dashboardSummary.test.js, wellnessScore.test.js                          # S5
     helpers/fakePrisma.js           # in-memory Prisma double, no live DB in this environment
-    helpers/testApp.js
+    helpers/testApp.js, helpers/dashboardFixtures.js
 
 frontend/
   package.json, next.config.js, vitest.config.js, vitest.setup.js, .env.example
@@ -204,6 +207,39 @@ check. No new tables back these routes — see the Data Models note below.
   series — the chart layer never receives more raw rows than points it will plot. `400`: `{ errors:
   { metric?, range? } }` for an invalid value.
 
+## 3d. Dashboard summary endpoint — introduced in S5 (Backend)
+Mounted under `/api/dashboard`, requires `authenticate` + `requireRole(["ADMIN", "MANAGER"])`
+(`403` for `EMPLOYEE`). One round trip returns the full KPI payload (S7's perf target) instead of
+five separate calls.
+
+- **`GET /api/dashboard/summary?scope=org|department&departmentId=`** — `scope` defaults to `org`.
+  `departmentId` is required and validated (existing department, `404` if not) when `scope=department`
+  for an `ADMIN`. A `MANAGER`'s scope/departmentId are **always forced to their own department**
+  server-side, ignoring any client-supplied `scope`/`departmentId` entirely — the same
+  "never trust client scope" rule `GET /api/wellness/history` (S4) enforces; a `MANAGER` with no
+  assigned department gets a `200` zeroed summary rather than an error. `400`:
+  `{ errors: { scope?, departmentId? } }` for a malformed value. All metrics are computed over
+  **active, `EMPLOYEE`-role users** within scope (managers/admins are not "employees" being
+  tracked) and, except for `Total Active Employees`/`Submissions Today`, over their entries in the
+  **trailing 7 days** (today inclusive) — the same window `HighStressEmployee` ranking and
+  `WeeklyWellnessTrend` use, kept consistent across the whole payload. `200` body:
+  - `kpiCards: KpiCard[]` — `Total Active Employees`, `Submissions Today` (entries dated today),
+    `Average Wellness Score` (trailing-7-day, `null` if no entries), `Employees Requiring
+    Attention` (trailing-7-day avg `stressLevel` ≥ `ATTENTION_STRESS_THRESHOLD`, provisionally `7`
+    pending S6's formal threshold — see Data Models).
+  - `wellnessStatusDistribution: WellnessStatusDistribution[]`, one row per provisional category
+    (`THRIVING`/`STABLE`/`AT_RISK`/`CRITICAL`, see Data Models), counting only employees with at
+    least one entry in the trailing 7 days (no data = unclassifiable, not a fifth bucket).
+  - `departmentWellnessScores: DepartmentWellnessScore[]` — one row per department in scope (all
+    active departments for `scope=org`, the single requested one for `scope=department`); `score`
+    is `null` for a department with no entries in the window; `employeeCount` counts all active
+    `EMPLOYEE`-role users assigned to it, whether or not they submitted this week.
+  - `weeklyWellnessTrends: WeeklyWellnessTrend[]` — exactly 7 points, oldest first (matching the
+    trend endpoint's ordering convention, S4); `score` is `null` for a day with no entries.
+  - `topHighStressEmployees: HighStressEmployee[]` — ranked by trailing-7-day average
+    `stressLevel` descending, ties broken by most recent submission descending; capped at 5;
+    excludes employees with no entries in the window (nothing to rank).
+
 ## 4. Data Models (cumulative)
 
 ### `roles` table — introduced in S2 (Backend), Prisma model `Role`
@@ -267,6 +303,32 @@ and would bypass the `UNIQUE(user_id, entry_date)` constraint that is the actual
 `energyScore` is a numeric mapping of the `EnergyLevel` enum (`utils/wellnessMetrics.js`:
 `VERY_LOW=1, LOW=2, MEDIUM=3, HIGH=4, VERY_HIGH=5`), since the story calls for a numeric score but
 `wellness_entries.energyLevel` is intentionally an enum (S3), not a raw number.
+
+### `KpiCard` / `WellnessStatusDistribution` / `DepartmentWellnessScore` / `WeeklyWellnessTrend` /
+`HighStressEmployee` — introduced in S5 (Backend), read-model shapes, not new tables
+Same "computed at request time" approach as `WellnessHistory`/`EmployeeProfile` above — every
+field is derived from `wellness_entries`/`users`/`departments` by `dashboardController.getSummary`,
+not persisted separately.
+- `KpiCard`: `{ name: string, value: number|null, description: string }`.
+- `WellnessStatusDistribution`: `{ category: THRIVING|STABLE|AT_RISK|CRITICAL, count: int }`.
+- `DepartmentWellnessScore`: `{ departmentId: int, name: string, score: number|null, employeeCount: int }`.
+- `WeeklyWellnessTrend`: `{ date: YYYY-MM-DD, score: number|null }`.
+- `HighStressEmployee`: `{ employeeId: int, name: string, stressLevel: number }` (average, not raw).
+
+`src/utils/wellnessScore.js` owns the two provisional metrics these shapes depend on, since neither
+exists yet on `wellness_entries` or anywhere else in this contract:
+- `computeWellnessScore(entry)` — a 0-100 composite: the mean of inverted-stress
+  (`(11 - stressLevel) / 10 * 100`), energy (`ENERGY_LEVEL_SCORE / 5 * 100`), and sleep-adequacy
+  (`min(sleepHours, 8) / 8 * 100`, capped at 8h as the healthy target) components.
+  `classifyWellnessScore(score)` buckets it into the four `WellnessStatusDistribution` categories
+  (`>=75` THRIVING, `>=50` STABLE, `>=25` AT_RISK, else CRITICAL).
+- `ATTENTION_STRESS_THRESHOLD = 7` — the trailing-7-day average `stressLevel` at/above which an
+  employee counts toward the `Employees Requiring Attention` KPI.
+
+Both are explicitly **provisional**: this story's technical plan defers the authoritative
+classification/threshold rules to S6 (not yet built). Keeping them as named constants/functions in
+one file means a future S6 change only has to touch `wellnessScore.js`, not the dashboard
+controller or its response shape.
 
 ## 5. Change Log (per story, per layer)
 
@@ -782,3 +844,46 @@ contract mismatches were found.
 `npx vitest run`: 143/143 frontend tests pass (unchanged count — this is a rewrite of the existing
 10-test file's fixture wiring, not new coverage). `python ci_check.py`: 47 backend + 143 frontend
 tests, all green.
+
+### Story S5
+**Backend (iteration 1):** Added `GET /api/dashboard/summary` (see API Contract 3d),
+`ADMIN`/`MANAGER`-only, returning the full dashboard KPI payload in one round trip: KPI cards,
+wellness status distribution, department wellness scores, the last 7 days of trend, and the top-5
+high-stress list. No new tables — every field is a read-model shape computed from `wellness_entries`/
+`users`/`departments` (see Data Models), following the same approach S4 used for
+`WellnessHistory`/`EmployeeProfile`.
+
+- `src/routes/dashboardRoutes.js`: mounts `/api/dashboard`, `authenticate` + `requireRole(["ADMIN",
+  "MANAGER"])` on every route.
+- `src/controllers/dashboardController.js` (`getSummary`): for a `MANAGER`, `scope`/`departmentId`
+  are always forced to `"department"`/`req.user.departmentId`, ignoring any client-supplied query
+  value entirely (matching `wellnessHistoryController.js`'s existing rule); a `MANAGER` with no
+  department gets a `200` zeroed summary. For `ADMIN`, `scope=department` requires a valid, existing
+  `departmentId` (`404` if not found). Scopes to active `EMPLOYEE`-role users only (via
+  `prisma.user.findMany` + a role-name filter, mirroring how other controllers join `role`/
+  `department` in JS rather than assuming a nested Prisma `where`). Computes `entriesToday` and
+  trailing-7-day `weekEntries` in one `Promise.all`, then derives every response section from those
+  two in-memory sets (grouped by user for per-employee averages/ranking) — no per-section requery.
+- `src/utils/wellnessScore.js`: `computeWellnessScore`/`averageWellnessScore`/
+  `classifyWellnessScore`/`ATTENTION_STRESS_THRESHOLD` (see Data Models) — the composite score and
+  provisional S6-threshold stand-ins, isolated in one file so a future S6 story only touches this.
+- `src/utils/validators.js`: added `validateDashboardSummaryQuery` (`scope` ∈ `org|department`,
+  `departmentId` format + required-when-`scope=department`, matching the existing field-level `400`
+  error-object contract).
+- No `fakePrisma.js` changes were needed — the existing `user`/`department`/`wellnessEntry`
+  `findMany`/`count` surface (with `in`/`gte`/`lte` where-clause support already added for S4)
+  covers every query this controller issues.
+- `tests/wellnessScore.test.js` (6 tests): unit coverage of the composite score's boundary/cap
+  behavior and category thresholds with round-number fixtures (deterministic, no floating-point
+  tolerance needed). `tests/dashboardSummary.test.js` (8 tests, real HTTP via supertest against the
+  real Express app + fake Prisma, no live Postgres in this environment, same constraint as
+  S2/S3/S4): 401/403, `400` on missing `departmentId`, `404` on an unknown one, an `ADMIN`
+  `scope=org` request asserting every response section's shape and values (KPI counts, status
+  distribution buckets, department scores/employeeCounts, the 7-point trend with a known
+  null/non-null pattern, top-5 ordering), a `MANAGER` request proving a requested `scope=org&
+  departmentId=<other>` is ignored and another department's employees never leak in, the
+  no-department zeroed-summary case, and an isolated fixture proving the tie-break-by-most-recent-
+  submission rule in the top-5 ranking.
+
+`node --test` in `backend/`: 67/67 passing (53 prior + 14 new). `python ci_check.py`: 67 backend +
+143 frontend tests, all green (frontend unchanged and untouched by this layer).

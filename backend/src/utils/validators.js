@@ -213,6 +213,28 @@ function validateTrendQuery(query) {
   return errors;
 }
 
+const DASHBOARD_SCOPES = ["org", "department"];
+
+/**
+ * Validates the query of GET /api/dashboard/summary. departmentId's format
+ * is checked whenever present; it's additionally required when scope is
+ * "department". A MANAGER's scope/departmentId are forced server-side in
+ * the controller regardless of what's supplied here (same pattern as
+ * validateWellnessHistoryQuery), so this only guards well-formedness.
+ */
+function validateDashboardSummaryQuery(query) {
+  const errors = {};
+  if (query.scope !== undefined && !DASHBOARD_SCOPES.includes(query.scope)) {
+    errors.scope = `scope must be one of: ${DASHBOARD_SCOPES.join(", ")}`;
+  }
+  if (query.departmentId !== undefined && !isPositiveIntegerString(query.departmentId)) {
+    errors.departmentId = "departmentId must be an integer";
+  } else if (query.scope === "department" && query.departmentId === undefined) {
+    errors.departmentId = "departmentId is required when scope is department";
+  }
+  return errors;
+}
+
 module.exports = {
   validateCreateUser,
   validateUpdateUser,
@@ -223,11 +245,13 @@ module.exports = {
   validateDateRangeQuery,
   validateWellnessHistoryQuery,
   validateTrendQuery,
+  validateDashboardSummaryQuery,
   isPositiveIntegerString,
   MOOD_VALUES,
   ENERGY_LEVEL_VALUES,
   HISTORY_SORTABLE_FIELDS,
   TREND_METRICS,
   TREND_RANGES,
+  DASHBOARD_SCOPES,
   DATE_RE,
 };
