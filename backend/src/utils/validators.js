@@ -16,6 +16,17 @@ function isNumberInRange(value, min, max) {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
+const POSITIVE_INTEGER_RE = /^\d+$/;
+
+/**
+ * Strictly validates that a raw query/path string is an exact positive
+ * integer — unlike Number.parseInt, which stops at the first non-digit
+ * character and silently accepts "12abc" as 12.
+ */
+function isPositiveIntegerString(value) {
+  return typeof value === "string" && POSITIVE_INTEGER_RE.test(value.trim());
+}
+
 /**
  * Validates the body of POST /api/admin/users.
  * Returns a list of human-readable field errors; empty list means valid.
@@ -175,10 +186,10 @@ function validateWellnessHistoryQuery(query) {
   if (query.mood !== undefined && !MOOD_VALUES.includes(query.mood)) {
     errors.mood = `mood must be one of: ${MOOD_VALUES.join(", ")}`;
   }
-  if (query.userId !== undefined && !Number.isInteger(Number.parseInt(query.userId, 10))) {
+  if (query.userId !== undefined && !isPositiveIntegerString(query.userId)) {
     errors.userId = "userId must be an integer";
   }
-  if (query.department !== undefined && !Number.isInteger(Number.parseInt(query.department, 10))) {
+  if (query.department !== undefined && !isPositiveIntegerString(query.department)) {
     errors.department = "department must be an integer";
   }
   if (query.sortBy !== undefined && !HISTORY_SORTABLE_FIELDS.includes(query.sortBy)) {
@@ -212,6 +223,7 @@ module.exports = {
   validateDateRangeQuery,
   validateWellnessHistoryQuery,
   validateTrendQuery,
+  isPositiveIntegerString,
   MOOD_VALUES,
   ENERGY_LEVEL_VALUES,
   HISTORY_SORTABLE_FIELDS,
