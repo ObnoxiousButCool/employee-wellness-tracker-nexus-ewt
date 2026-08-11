@@ -1,4 +1,8 @@
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const MOOD_VALUES = ["VERY_LOW", "LOW", "NEUTRAL", "GOOD", "GREAT"];
+const ENERGY_LEVEL_VALUES = ["VERY_LOW", "LOW", "MEDIUM", "HIGH", "VERY_HIGH"];
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -6,6 +10,10 @@ function isNonEmptyString(value) {
 
 function isPositiveInt(value) {
   return Number.isInteger(value) && value > 0;
+}
+
+function isNumberInRange(value, min, max) {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
 /**
@@ -95,10 +103,67 @@ function validateUpdateDepartment(body) {
   return errors;
 }
 
+/**
+ * Validates the body of POST /api/wellness/entries.
+ * Returns a field-name -> message error object (empty object means valid),
+ * matching the 422 field-level error contract the story requires.
+ */
+function validateWellnessEntry(body) {
+  const errors = {};
+
+  if (!Number.isInteger(body.stressLevel) || body.stressLevel < 1 || body.stressLevel > 10) {
+    errors.stressLevel = "stressLevel must be an integer between 1 and 10";
+  }
+  if (!isNumberInRange(body.workHours, 0, 24)) {
+    errors.workHours = "workHours must be a number between 0 and 24";
+  }
+  if (!isNumberInRange(body.sleepHours, 0, 24)) {
+    errors.sleepHours = "sleepHours must be a number between 0 and 24";
+  }
+  if (typeof body.mood !== "string" || !MOOD_VALUES.includes(body.mood)) {
+    errors.mood = `mood must be one of: ${MOOD_VALUES.join(", ")}`;
+  }
+  if (typeof body.energyLevel !== "string" || !ENERGY_LEVEL_VALUES.includes(body.energyLevel)) {
+    errors.energyLevel = `energyLevel must be one of: ${ENERGY_LEVEL_VALUES.join(", ")}`;
+  }
+  if (
+    body.entryDate !== undefined &&
+    (typeof body.entryDate !== "string" || !DATE_RE.test(body.entryDate))
+  ) {
+    errors.entryDate = "entryDate must be a valid date in YYYY-MM-DD format";
+  }
+
+  if (
+    errors.workHours === undefined &&
+    errors.sleepHours === undefined &&
+    body.workHours + body.sleepHours > 24
+  ) {
+    errors.workHours = "workHours plus sleepHours must not exceed 24";
+  }
+
+  return errors;
+}
+
+function validateDateRangeQuery(query) {
+  const errors = {};
+  if (query.from !== undefined && (typeof query.from !== "string" || !DATE_RE.test(query.from))) {
+    errors.from = "from must be a valid date in YYYY-MM-DD format";
+  }
+  if (query.to !== undefined && (typeof query.to !== "string" || !DATE_RE.test(query.to))) {
+    errors.to = "to must be a valid date in YYYY-MM-DD format";
+  }
+  return errors;
+}
+
 module.exports = {
   validateCreateUser,
   validateUpdateUser,
   validateStatusUpdate,
   validateCreateDepartment,
   validateUpdateDepartment,
+  validateWellnessEntry,
+  validateDateRangeQuery,
+  MOOD_VALUES,
+  ENERGY_LEVEL_VALUES,
+  DATE_RE,
 };
