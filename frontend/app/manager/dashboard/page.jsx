@@ -1,3 +1,4 @@
+import Link from "next/link";
 import RoleGuard from "../../../components/RoleGuard";
 import LogoutButton from "../../../components/LogoutButton";
 import { getSession } from "../../../lib/session";
@@ -17,6 +18,9 @@ function ManagerDashboardContent() {
     <main>
       <h1>Manager Dashboard</h1>
       <p>Signed in as user #{session.userId} (MANAGER).</p>
+      <nav>
+        <Link href="/manager/wellness/history">Team Wellness History</Link>
+      </nav>
       <LogoutButton />
     </main>
   );

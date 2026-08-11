@@ -21,6 +21,7 @@ function AdminDashboardContent() {
       <nav>
         <Link href="/admin/users">Manage Users</Link>
         <Link href="/admin/departments">Manage Departments</Link>
+        <Link href="/admin/wellness/history">Wellness History</Link>
       </nav>
       <LogoutButton />
     </main>

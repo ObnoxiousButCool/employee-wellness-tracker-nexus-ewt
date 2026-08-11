@@ -695,3 +695,90 @@ test was added, removed, or changed in behavior — this is a pure split.
 
 `node --test` in `backend/`: 53/53 passing (unchanged count, reorganized across the two files).
 `python ci_check.py`: 53 backend + 107 frontend tests, all green.
+
+**Frontend (iteration 1):** Added the Manager/Admin wellness reporting screens under
+`frontend/app/manager/` and `frontend/app/admin/`, both `RoleGuard`-wrapped and linked from their
+respective dashboards. `WellnessHistoryGrid.jsx` (`/manager/wellness/history`,
+`/admin/wellness/history`) consumes `GET /api/wellness/history` with `userId`/`mood`/`from`/`to`
+filters, a click-to-toggle sort on the three backend-sortable columns (`entryDate`, `stressLevel`,
+`sleepHours`, `sortBy`/`sortOrder` sent to the backend, not sorted client-side), and pagination;
+the `department` filter (populated from `GET /api/admin/departments`) is shown only for `ADMIN`,
+since the backend ignores that query value entirely for a `MANAGER` caller — matching, not
+duplicating, the server-side scoping. Each employee name links to
+`/{role}/employees/:id`. `EmployeeProfile.jsx` (that route) consumes
+`GET /api/wellness/employees/:id/profile` (default last-30-days range) and renders the employee's
+info plus `avgStressLevel`/`avgSleepHours`/`avgEnergyScore`/`entryCount`, with an explicit "no
+entries in this range" state when `entryCount` is `0` rather than showing `null` averages.
+`TrendChart.jsx` (rendered inside the profile page) consumes
+`GET /api/wellness/employees/:id/trend` with `metric`/`range` selectors, rendering the returned
+pre-aggregated `{date, value}` series as an inline SVG polyline plus an accessible data table (no
+charting library added, since none was already a dependency). Added `lib/wellnessReportsApi.js`
+(client fetch wrappers) and three new BFF proxy routes under `frontend/app/api/wellness/`
+(`history`, `employees/[id]/profile`, `employees/[id]/trend`), all using the existing
+`backendProxy.js` relay. Every screen has loading (`role="status"`), error (`role="alert"` +
+Retry), and empty states.
+
+*Verified end-to-end* (`frontend/__tests__/wellnessReportsLiveBackendVerification.test.js`, 10
+tests, following the same pattern as `adminLiveBackendVerification.test.js`): the real backend
+Express app (`backend/src/app.js` via `createApp`, imported directly — this branch was cut from
+`story-s4-backend` so `backend/src` is present here) is started on a real ephemeral localhost port,
+wired to the backend's own `tests/helpers/fakePrisma.js` (no live Postgres in this environment,
+same constraint the backend layer's own suite runs under). The frontend's actual
+`/api/wellness/history`, `/api/wellness/employees/:id/profile`, and
+`/api/wellness/employees/:id/trend` route handlers are driven against it over a real TCP socket
+with real signed `ewt_token` cookies for a `MANAGER`, a second `MANAGER` in a different department,
+and an `ADMIN` — no mocked `fetch` — confirming for real: a `MANAGER` is scoped to their own
+department's entries even when a different `department` is requested; an `ADMIN` can filter by any
+department; a `userId` outside a manager's department returns an empty page rather than a 403 or
+another department's data; the `sortBy`/`sortOrder` column toggle actually reorders the real
+response; an `EMPLOYEE` session gets a real 403; a profile's averaged stats match the seeded
+entries and `entryCount`; a manager reaching an employee outside their department gets a real 403
+and a nonexistent employee gets a real 404 from `enforceEmployeeDepartmentScope`; and the trend
+series is genuinely oldest-first and rejects an invalid `metric` with a real 400. All 10 passed. No
+contract mismatches were found — live backend behavior matched the documented API Contract
+exactly. Guarded with `describe.skipIf(!fs.existsSync(...))` so it skips cleanly (not fails) if
+`backend/src` is ever absent from this branch, matching the S2-iteration-3 precedent.
+
+Also added `wellnessReportsApi.test.js` (6 tests, pure fetch-wrapper unit tests),
+`wellnessReportsRoutes.test.js` (7 tests, BFF proxy relay behavior with mocked `fetch`, including
+403/404/400 relay), and `WellnessHistoryGrid.test.jsx`/`TrendChart.test.jsx`/
+`EmployeeProfile.test.jsx` (6 + 4 + 3 tests, RTL, covering loading/error/empty states, the
+ADMIN-only department filter, the sort-column toggle, and the zero-`entryCount` empty-stats case).
+
+`npx vitest run`: 143/143 frontend tests pass (107 prior + 36 new: 6 + 7 + 6 + 4 + 3 unit/RTL tests
+above, plus the 10-test live-backend suite). `python ci_check.py`: 47 backend + 143 frontend tests,
+all green.
+
+**Fixes (iteration 2) — frontend:** Addressed the single review finding: iteration 1's
+`wellnessReportsLiveBackendVerification.test.js` gated its `describe` block behind
+`describe.skipIf(!fs.existsSync(".../backend/src/app.js"))`, so the frontend diff alone did not
+guarantee the claimed end-to-end verification actually executes — any checkout/CI configuration
+where `backend/src` isn't materialized alongside this branch would see the suite silently skip
+rather than fail, making the "verified end-to-end" claim unsubstantiated from the diff itself. It
+also imported the backend's own `backend/tests/helpers/fakePrisma.js`, a test helper this layer
+doesn't own.
+
+Removed the `describe.skipIf` guard entirely — the suite is now unconditional, matching the
+precedent `wellnessLiveIntegration.test.js` (S3 iteration 3) already set. Replaced the
+`backend/tests/helpers/fakePrisma.js` import with this layer's own
+`__tests__/helpers/wellnessFakePrisma.js`, extended with a `user` model (`findMany` supporting
+`departmentId`/`id: { in }` filters, `findUnique`) and a generic `wellnessEntry.findMany`/`count`
+(any `orderBy` field, not just `entryDate`, plus `userId: { in }`/`mood` filtering) — exactly the
+Prisma surface `wellnessHistoryController.js`, `employeeProfileController.js`, and
+`enforceEmployeeDepartmentScope.js` call, checked against those controllers' source directly.
+`wellnessLiveIntegration.test.js`'s existing `createWellnessFakePrisma()` calls are unaffected
+(the new `users` option defaults to `[]`).
+
+The real `backend/src/app.js` (via `createApp`, imported directly — `backend/src` is committed on
+this branch, confirmed via `git ls-files`) is still what's under test; only the Prisma double wired
+into it changed. Re-ran all 10 cases against the real Express app, real middleware, and real
+controllers: all still pass, covering the same acceptance criteria as iteration 1 — manager
+department scoping ignoring a client-supplied `department`, ADMIN department filtering, an
+out-of-scope `userId` returning an empty page rather than a 403, the `sortBy`/`sortOrder` toggle,
+the EMPLOYEE-role 403, profile stat averaging, the manager cross-department 403, the
+nonexistent-employee 404, and the trend series' oldest-first ordering plus invalid-metric 400. No
+contract mismatches were found.
+
+`npx vitest run`: 143/143 frontend tests pass (unchanged count — this is a rewrite of the existing
+10-test file's fixture wiring, not new coverage). `python ci_check.py`: 47 backend + 143 frontend
+tests, all green.
