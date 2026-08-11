@@ -41,9 +41,13 @@ frontend/
     admin/users/page.jsx            # RoleGuard-wrapped, renders <UserManagement>
     admin/departments/page.jsx      # RoleGuard-wrapped, renders <DepartmentManagement>
     manager/dashboard/page.js       # RoleGuard-wrapped MANAGER landing page
-    employee/home/page.js           # RoleGuard-wrapped EMPLOYEE landing page
+    employee/home/page.js           # RoleGuard-wrapped EMPLOYEE landing page, links to wellness screens
+    employee/wellness/page.jsx      # RoleGuard-wrapped daily check-in screen, S3
+    employee/wellness/history/page.jsx # RoleGuard-wrapped history screen, S3
     api/auth/login/route.js         # BFF proxy -> backend, forwards ewt_token, sets ewt_session
     api/auth/logout/route.js        # BFF proxy -> backend, clears both cookies
+    api/wellness/entries/route.js   # BFF proxy -> backend POST /api/wellness/entries, S3
+    api/wellness/entries/me/route.js # BFF proxy -> backend GET /api/wellness/entries/me, S3
     api/admin/users/route.js, api/admin/users/[id]/route.js
     api/admin/users/[id]/status/route.js
     api/admin/departments/route.js, api/admin/departments/[id]/route.js
@@ -52,6 +56,8 @@ frontend/
     LoginForm.jsx                   # client: email/password form, loading/error states
     RoleGuard.jsx                   # server: redirects to /login on missing/wrong-role session
     LogoutButton.jsx                # client: calls /api/auth/logout, redirects to /login
+    wellness/WellnessEntryForm.jsx  # client: daily check-in form, loading/error/empty states, S3
+    wellness/WellnessHistory.jsx    # client: history table, loading/error/empty states, S3
     admin/UserManagement.jsx        # list/search/filter/paginate/create/edit/activate users
     admin/DepartmentManagement.jsx  # list/create/rename/deactivate departments
     admin/UserFormDialog.jsx, admin/DepartmentFormDialog.jsx
@@ -59,12 +65,16 @@ frontend/
   lib/
     roles.js                        # ROLES, ROLE_LANDING_PATHS, getLandingPathForRole, resolveAccess
     session.js                      # parseSessionToken (verifies ewt_token JWT), getSession
+    backendProxy.js                 # shared relay used by BFF routes (wellness + admin), S3
+    wellnessApi.js                  # client fetch wrappers for /api/wellness/*, S3
+    wellnessOptions.js              # fixed MOOD_OPTIONS/ENERGY_LEVEL_OPTIONS lists, S3
     adminApi.js                     # fetch wrappers for /api/admin/* BFF routes
     adminRoleCatalog.js             # buildRoleOptions: static role fallback, see S2 Change Log iteration 2
-    backendProxy.js                 # shared relay used by the five admin BFF route handlers
   __tests__/
     roles.test.js, session.test.js, RoleGuard.test.jsx, authRoutes.test.js, LoginForm.test.jsx
     liveIntegration.test.js         # real-socket integration test, see Change Log iteration 3
+    wellnessApi.test.js, wellnessRoutes.test.js, WellnessEntryForm.test.jsx,
+    WellnessHistory.test.jsx, wellnessLiveIntegration.test.js  # S3
     adminApi.test.js, adminRoutes.test.js, UserManagement.test.jsx, DepartmentManagement.test.jsx
     adminUsersLiveIntegration.test.js, adminDepartmentsLiveIntegration.test.js
                                      # real sockets, contract-accurate stand-in server, see S2 iteration 2
@@ -512,3 +522,47 @@ passing. `python ci_check.py`: 29 backend + 32 frontend tests, all green.
    without dropping any endpoint, schema, or fix detail.
 `node --test` in `backend/`: 31/31 passing (29 prior + 2 new). `python ci_check.py`: 31 backend +
 32 frontend tests, all green.
+
+**Frontend (iteration 1):** Added `/employee/wellness` (`WellnessEntryForm.jsx`) and
+`/employee/wellness/history` (`WellnessHistory.jsx`) under `frontend/app/employee/`, both
+`RoleGuard`-wrapped to `EMPLOYEE` and linked from `/employee/home`. Added two Next.js BFF proxy
+routes under `frontend/app/api/wellness/` (`entries`, `entries/me`, via a new shared
+`frontend/lib/backendProxy.js`) plus `frontend/lib/wellnessApi.js` client fetch wrappers, consuming
+both S3 endpoints. `WellnessEntryForm` renders `mood`/`energyLevel` as fixed radio groups
+(`frontend/lib/wellnessOptions.js`, mirroring the backend enums — never free text); it never sends
+`entryDate`, so submissions structurally target only today. On mount it loads today's entry via
+`GET /api/wellness/entries/me?from=<today>&to=<today>` to prefill for in-place editing, or renders
+a "no entry yet today" empty state — with real loading/error/empty states, not just the create
+form. A `422` body's `errors.<field>` renders inline per field (no generic banner); other failures
+show one alert banner. `WellnessHistory` renders the full history in backend response order (newest
+first, not re-sorted client-side), with its own loading/error(+Retry)/empty states.
+
+*Verified end-to-end* against the real backend Express app over a real socket with a real signed
+`ewt_token` — see the iteration-3 fix entry below for the current, corrected form of this claim.
+Built on `story-s3-frontend`, cut from `story-s3-backend`; the unmerged S2 admin frontend screens
+are not present on this branch and were not touched.
+
+**Fixes (iteration 2) — frontend:** (1) Replaced CJS `require(...)` with `await import(...)` in
+`wellnessLiveIntegration.test.js`'s `beforeAll` so the whole file is consistently ESM (the mixed
+loader was not guaranteed to resolve under every `vitest` config). (2) Added a 403 stale-`entryDate`
+live test, closing a gap where only 401/422/200/history were exercised. `npx vitest run`: 58/58.
+
+**Fixes (iteration 3) — frontend:** Addressed all four review findings.
+1. *Backend-test-helper coupling.* `wellnessLiveIntegration.test.js` imported
+   `backend/tests/helpers/fakePrisma.js` directly — a backend-owned test file the frontend doesn't
+   control. Added `frontend/__tests__/helpers/wellnessFakePrisma.js`, a self-contained in-memory
+   fake of only the `wellnessEntry` model the wellness routes touch; the live test now wires the
+   real backend `createApp` to this frontend-owned fake instead.
+2. *Newest-first ordering was never actually proven.* The only live ordering assertion checked
+   "every returned row belongs to this user," which passes trivially with a single row (POST can
+   only ever upsert *today's* row). Added a test that seeds three distinct-date rows directly via
+   the new fake's `wellnessEntry.upsert`, then drives the real `GET /api/wellness/entries/me`
+   handler over the real socket and asserts the response is strictly `["2026-03-15", "2026-02-10",
+   "2026-01-01"]` — a real, non-trivial ordering check.
+3. *Date-sensitive fixture.* `WellnessEntryForm.test.jsx`'s prefill test hardcoded
+   `entryDate: "2026-08-11"`, matching the literal wall-clock date at authoring time. Replaced with
+   `new Date().toISOString().slice(0, 10)` computed at test-run time.
+4. *This file's line-budget.* Condensed the S3 frontend iteration-1/2 entries above without
+   dropping any endpoint, screen, or fix detail.
+`npx vitest run`: 59/59 frontend tests pass (58 prior + 1 new ordering test); `python ci_check.py`:
+29 backend + 59 frontend tests, all green.
