@@ -677,3 +677,21 @@ computed from the existing `wellness_entries`/`users` tables (S2/S3), not duplic
 
 `node --test` in `backend/`: 53/53 passing (47 prior + 6 new). `python ci_check.py`: 53 backend +
 107 frontend tests, all green.
+
+**Fixes (iteration 3) — backend:** Addressed the single review finding — `backend/tests/
+employeeProfile.test.js` (208 lines) exceeded the file-size ceiling other split precedents in this
+project use (S2 iteration 2). Endpoint behavior itself was already correct and unchanged; this was
+purely a test-file-size fix, no controller/route/middleware code changed.
+
+Extracted the shared fixtures (`DEPARTMENTS`, `USERS`, `entry`/`recentDate` builders, `buildApp`)
+into `backend/tests/helpers/employeeProfileFixtures.js` so neither split file duplicates them, then
+split the 12 original tests by endpoint: `tests/employeeProfile.test.js` (7 tests — 401, EMPLOYEE
+403, MANAGER cross-department 403, malformed-id 400, unknown-employee 404, the default-30-day
+summary-stats case, and the boundary-day-inclusion case, all for `GET
+/api/wellness/employees/:id/profile`) and the new `tests/employeeTrend.test.js` (5 tests — the same
+malformed-id/cross-department-403/boundary-day shape plus the invalid-metric 400 and the
+oldest-first pre-aggregated-series assertion, all for `GET /api/wellness/employees/:id/trend`). No
+test was added, removed, or changed in behavior — this is a pure split.
+
+`node --test` in `backend/`: 53/53 passing (unchanged count, reorganized across the two files).
+`python ci_check.py`: 53 backend + 107 frontend tests, all green.
