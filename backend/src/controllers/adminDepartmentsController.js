@@ -21,12 +21,16 @@ async function listDepartments(req, res) {
   else if (status === "inactive") where.isActive = false;
 
   const rows = await prisma.department.findMany({ where, orderBy: { id: "asc" } });
-  const withCounts = await Promise.all(
-    rows.map(async (row) => ({
-      ...row,
-      activeUserCount: await prisma.user.count({ where: { departmentId: row.id, isActive: true } }),
-    })),
-  );
+  const grouped = await prisma.user.groupBy({
+    by: ["departmentId"],
+    where: { departmentId: { in: rows.map((row) => row.id) }, isActive: true },
+    _count: { _all: true },
+  });
+  const countByDepartmentId = new Map(grouped.map((g) => [g.departmentId, g._count._all]));
+  const withCounts = rows.map((row) => ({
+    ...row,
+    activeUserCount: countByDepartmentId.get(row.id) || 0,
+  }));
 
   return res.status(200).json({ data: withCounts.map(serializeDepartment) });
 }

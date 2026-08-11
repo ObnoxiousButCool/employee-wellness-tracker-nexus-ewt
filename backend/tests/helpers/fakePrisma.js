@@ -20,6 +20,9 @@ function matchesWhere(row, where, tables) {
       const needle = condition.mode === "insensitive" ? condition.contains.toLowerCase() : condition.contains;
       return haystack.includes(needle);
     }
+    if (condition && typeof condition === "object" && "in" in condition) {
+      return condition.in.includes(value);
+    }
     return value === condition;
   });
 }
@@ -51,6 +54,19 @@ function createFakePrisma({ roles = [], departments = [], users = [] } = {}) {
       },
       async count({ where = {} } = {}) {
         return state.users.filter((u) => matchesWhere(u, where)).length;
+      },
+      async groupBy({ by, where = {}, _count } = {}) {
+        const field = by[0];
+        const rows = state.users.filter((u) => matchesWhere(u, where));
+        const counts = new Map();
+        for (const row of rows) {
+          const key = row[field];
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        return [...counts.entries()].map(([key, count]) => ({
+          [field]: key,
+          _count: typeof _count === "object" ? Object.fromEntries(Object.keys(_count).map((k) => [k, count])) : count,
+        }));
       },
       async findUnique({ where }) {
         const row = state.users.find((u) => (where.id !== undefined ? u.id === where.id : u.email === where.email));

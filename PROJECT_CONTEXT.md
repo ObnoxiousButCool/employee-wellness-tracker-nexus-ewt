@@ -93,45 +93,32 @@ backend's `Secure`/`SameSite=Strict` cookie and the frontend's origin are never 
 All routes below are mounted under `/api/admin` and require `authenticate` + `requireRole(["ADMIN"])`
 (`401` if no/invalid session, `403` if the session's role isn't `ADMIN`).
 
-- **`GET /api/admin/users?search=&department=&status=&page=&pageSize=`** — server-side,
-  case-insensitive `search` on `name`/`email`; `department` filters by department `id`;
-  `status` is `active`|`inactive`; `page`/`pageSize` default `1`/`20`, `pageSize` capped at `100`.
-  `200`: `{ "data": [{ id, name, email, roleId, role, departmentId, department, isActive,
-  createdAt, updatedAt }], "pagination": { page, pageSize, total, totalPages } }`. Never returns
-  `passwordHash`.
-- **`POST /api/admin/users`** — body `{ name, email, password, roleId, departmentId? }`; hashes
-  `password` with bcrypt (cost 10). `201` with the created user (same shape as above). `400` on
-  missing/malformed fields, `409 { "error": "Email is already in use" }` on duplicate email,
-  `400` if `roleId`/`departmentId` don't reference existing rows.
-- **`PUT /api/admin/users/:id`** — body: any of `{ name, email, roleId, departmentId }`, at least
-  one required. `200` with the updated user. `409` on duplicate email, `404` if the id doesn't
-  exist, `400` on invalid FK references.
-- **`PATCH /api/admin/users/:id/status`** — body `{ isActive: boolean }`; soft
-  activate/deactivate only, never deletes the row. `200` with the updated user, `404` if missing.
-- **`GET /api/admin/departments?status=`** — `200`: `{ "data": [{ id, name, isActive,
-  activeUserCount }] }`. `activeUserCount` is the live count of `is_active=true` users currently
-  assigned to that department, so a caller can warn an admin before deactivating.
-- **`POST /api/admin/departments`** — body `{ name, isActive? }` (`isActive` defaults `true`).
-  `201` with the created department. `409 { "error": "Department name is already in use" }` on
-  duplicate name.
-- **`PUT /api/admin/departments/:id`** — body: any of `{ name, isActive }`, at least one
-  required. This single endpoint covers both renames and the active/inactive soft-status toggle
-  (there is no separate `PATCH .../status` route for departments). Deactivating **never** touches
-  the `users` table — a department's users keep their existing `isActive`/`departmentId` values;
-  the response's `activeUserCount` is what the frontend must use to warn the admin and drive an
-  explicit reassignment/deactivation flow. `409` on duplicate name, `404` if missing.
+- **`GET /api/admin/users?search=&department=&status=&page=&pageSize=`** — case-insensitive
+  `search` on `name`/`email`; `department` filters by id; `status` is `active`|`inactive`;
+  `page`/`pageSize` default `1`/`20`, capped at `100`. `200`: `{ data: [{ id, name, email, roleId,
+  role, departmentId, department, isActive, createdAt, updatedAt }], pagination: { page, pageSize,
+  total, totalPages } }`. Never returns `passwordHash`.
+- **`POST /api/admin/users`** — body `{ name, email, password, roleId, departmentId? }`; bcrypt
+  cost 10. `201` created user. `400` invalid/missing fields, `409` duplicate email, `400` bad
+  `roleId`/`departmentId` FK.
+- **`PUT /api/admin/users/:id`** — body: any of `{ name, email, roleId, departmentId }`. `200`
+  updated user, `409` duplicate email, `404` missing, `400` bad FK.
+- **`PATCH /api/admin/users/:id/status`** — body `{ isActive: boolean }`; soft toggle only. `200`
+  updated user, `404` missing.
+- **`GET /api/admin/departments?status=`** — `200`: `{ data: [{ id, name, isActive,
+  activeUserCount }] }`; `activeUserCount` is the live count of active users assigned to it.
+- **`POST /api/admin/departments`** — body `{ name, isActive? }` (default `true`). `201` created,
+  `409` duplicate name.
+- **`PUT /api/admin/departments/:id`** — body: any of `{ name, isActive }`; covers both rename and
+  soft-status toggle (no separate status route). Deactivating never touches `users`; response's
+  `activeUserCount` drives the frontend's reassignment/deactivation warning. `409` duplicate name,
+  `404` missing.
 
-> **Auth prerequisite gap found at the start of this iteration:** S1's `PROJECT_CONTEXT.md` entry
-> claimed a full backend (`POST /api/auth/login`/`logout`, `authenticate.js`, `requireRole.js`,
-> the enum-based `users` table) had been built and committed, but `git ls-files backend` showed
-> only `backend/package-lock.json` was ever tracked — `backend/src`, `backend/prisma`, and
-> `backend/tests` existed on disk only as empty directories, and `git log` has no commits
-> touching them. That backend never actually existed. This iteration rebuilt `authenticate.js`
-> and `requireRole.js` (same JWT contract as documented: `ewt_token` cookie or `Bearer` header,
-> HS256, claims `userId`/`role`/`departmentId`) because the new admin routes need them, but
-> **`POST /api/auth/login`/`logout` were out of this story's scope and are still missing** — there
-> is currently no way to obtain a valid `ewt_token`. A future iteration must add them back (or a
-> corrected S1) before the frontend's login flow or these admin routes are reachable end-to-end.
+> **Auth prerequisite gap:** S1's documented backend was never actually committed (only
+> `backend/package-lock.json` was tracked; `src`/`prisma`/`tests` were empty). This iteration
+> rebuilt `authenticate.js`/`requireRole.js` (same JWT contract as documented) so the new admin
+> routes work, but `POST /api/auth/login`/`logout` remain missing — a future iteration must add
+> them before the frontend login flow is reachable end-to-end.
 
 ## 4. Data Models (cumulative)
 
@@ -232,28 +219,99 @@ tests total) covering the forgery and half-signed-out fixes with real signed JWT
 
 ### Story S2
 **Backend (iteration 1):** Found that S1's documented backend was never actually committed (see
-the API Contract callout above) — `backend/` had only `package-lock.json` tracked in git and
-empty `src`/`prisma`/`tests` directories on disk, plus a `node_modules` install with no
-`package.json`. Rebuilt the backend runtime from scratch on top of that pre-existing
-`node_modules` (added `backend/package.json`, restored `express`/`bcrypt`/`jsonwebtoken`/
-`cookie-parser`/`@prisma/client`/`prisma`/`supertest`/`dotenv` after an errant `npm install
-dotenv` without a `package.json` had pruned them; `npm install` restored all 167 packages).
-Added `prisma/schema.prisma` and migration `20260810120000_init_roles_departments_users_wellness`
+the API Contract callout above) — only `package-lock.json` was tracked, with empty
+`src`/`prisma`/`tests` dirs. Rebuilt the backend runtime from scratch on the pre-existing
+`node_modules` (added `backend/package.json`, `npm install` restored dependencies). Added
+`prisma/schema.prisma` and migration `20260810120000_init_roles_departments_users_wellness`
 creating `roles` (seeded `ADMIN`/`MANAGER`/`EMPLOYEE`), `departments`, `users`, and
 `wellness_entries` per the technical plan, all FKs `ON DELETE RESTRICT`, `UNIQUE` on
-`users.email` and `departments.name`. Implemented `authenticate.js`/`requireRole.js`
-(unchanged JWT contract from S1's docs) and the seven `/api/admin/*` endpoints listed in the API
-Contract, all ADMIN-only. Email/department-name uniqueness is enforced by the DB `UNIQUE`
-constraint and re-checked at the API layer (Prisma `P2002` → `409`); FK violations on
-`roleId`/`departmentId` → `400`; missing rows → `404`. Deactivating a department only ever
-writes to `departments` — it never touches `users` — and each department response includes
-`activeUserCount` so the frontend can build the required reassignment/deactivation warning.
-No live Postgres was available in this environment (`psql`/Docker daemon absent), so
-`backend/tests/helpers/fakePrisma.js` is an in-memory double implementing the exact subset of the
-Prisma Client API the controllers call (including Prisma's real `P2002`/`P2003`/`P2025` error
-shapes), and `backend/tests/helpers/testApp.js` builds the real Express app via
-`createApp({ prisma })` against it — tests drive real HTTP requests through supertest with real
-JWTs, no controller mocking. `adminUsers.test.js`, `adminDepartments.test.js`,
-`authMiddleware.test.js` (18 tests, all passing via `node --test`), wired into `ci_check.py`
-(already supported `backend/tests/*.test.js` and per-layer `node --check`, unchanged). Full
-`python ci_check.py` passes (18 backend + 32 frontend tests).
+`users.email`/`departments.name`. Implemented `authenticate.js`/`requireRole.js` (unchanged JWT
+contract) and the seven `/api/admin/*` endpoints in the API Contract, all ADMIN-only. Uniqueness
+enforced at the DB and re-checked at the API layer (Prisma `P2002` → `409`); FK violations → `400`;
+missing rows → `404`. Deactivating a department only ever writes to `departments`, never `users`;
+each response includes `activeUserCount`. No live Postgres was available, so
+`backend/tests/helpers/fakePrisma.js` is an in-memory double of the Prisma Client subset the
+controllers call (real `P2002`/`P2003`/`P2025` error shapes), and
+`backend/tests/helpers/testApp.js` builds the real Express app against it — tests drive real HTTP
+requests via supertest, no controller mocking. `adminUsers.test.js`, `adminDepartments.test.js`,
+`authMiddleware.test.js` (18 tests, `node --test`), wired into `ci_check.py`. `python ci_check.py`
+passed (18 backend + 32 frontend tests).
+
+**Fixes (iteration 2) — backend:** Addressed all four review findings.
+1. *JWT secret handling (high severity).* `config/env.js` defaulted `jwtSecret` to `""` when
+   `JWT_SECRET` was unset, so `jwt.verify(token, "")` would have accepted a token forged with an
+   empty signing secret — a real admin-session forgery path in any deployment that forgot to set
+   the env var. Fixed by throwing at startup if `JWT_SECRET` is missing/empty, matching the
+   frontend's already-required shared-secret contract.
+2. *Non-portable test script.* `package.json`'s `"test": "node --test tests/*.test.js"` relies on
+   the shell to expand the glob, which `cmd.exe`/Windows `npm test` does not do, silently running
+   zero tests there. Changed to `"test": "node --test"`, which uses Node's own recursive test-file
+   discovery (no shell glob) and needs no shell-specific quoting; `ci_check.py`'s explicit
+   `glob("*.test.js")` invocation (Python-side, always portable) is unchanged.
+3. *N+1 count query.* `listDepartments` ran one `prisma.user.count` per department row via
+   `Promise.all`. Replaced with a single `prisma.user.groupBy({ by: ["departmentId"], where: {
+   departmentId: { in: rows.map(r => r.id) }, isActive: true }, _count: { _all: true } })` and a
+   lookup map, so listing N departments now issues one query instead of N. Added `groupBy` and
+   `{ in: [...] }` where-clause support to `fakePrisma.js` to cover this in tests.
+4. *`PROJECT_CONTEXT.md` line budget.* Condensed this story's Backend-authored sections (the
+   Admin CRUD contract, the auth-prerequisite callout, and this Change Log entry) without dropping
+   any endpoint, schema, or fix detail.
+`backend/tests/adminDepartments.test.js`'s existing "lists departments with active user counts"
+test exercises the new `groupBy` path unchanged. `npm test` (18/18) and `python ci_check.py`
+(18 backend + 72 frontend) both pass.
+
+**Frontend (iteration 1):** Added `/admin/users` and `/admin/departments` under `frontend/app/admin/`
+(both `RoleGuard`-wrapped to ADMIN, linked from the admin dashboard), backed by `UserManagement.jsx`
+and `DepartmentManagement.jsx` (`frontend/components/admin/`) plus `UserFormDialog.jsx`,
+`DepartmentFormDialog.jsx`, and `DepartmentDeactivationDialog.jsx`. Added five Next.js BFF proxy
+routes under `frontend/app/api/admin/` (`users`, `users/[id]`, `users/[id]/status`, `departments`,
+`departments/[id]`) that forward the `ewt_token` cookie and relay the backend's status/body
+unchanged, matching the S1 auth-proxy pattern, and `frontend/lib/adminApi.js` for the client-side
+fetch wrappers. Consumes every endpoint in the S2 API Contract: `GET/POST /api/admin/users`,
+`PUT /api/admin/users/:id`, `PATCH /api/admin/users/:id/status`, `GET/POST /api/admin/departments`,
+`PUT /api/admin/departments/:id`. Each screen has loading (`role="status"`), error (`role="alert"`
+with Retry), and empty states, and both forms surface the backend's exact error message (e.g. the
+409 email/name-conflict body) inline without closing the dialog. User management supports
+search/department/status filtering, pagination, create, edit, and activate/deactivate. Department
+management supports create, rename, and deactivate; since the backend's single
+`PUT /api/admin/departments/:id` never cascades to `users`, deactivating a department with
+`activeUserCount > 0` opens `DepartmentDeactivationDialog` (a `role="alert"` warning) instead of
+applying immediately, offering "Manage affected users" (navigates to `/admin/users?department=:id`,
+which `UserManagement` reads via `useSearchParams` to pre-filter) or "Deactivate anyway".
+
+*Contract gap:* the API Contract has no `GET /api/admin/roles` endpoint — only `roleId` (an opaque
+FK) on each user record. `UserManagement`'s role picker is populated from the distinct
+`{roleId, role}` pairs observed in live `GET /api/admin/users` responses, so a role with zero
+existing members won't appear as a create/edit option until at least one user of that role exists.
+This is a real functional gap (not just a UI nicety) for a fresh install with no users yet; a future
+story should add `GET /api/admin/roles`.
+
+*Verified end-to-end* (`frontend/__tests__/adminLiveIntegration.test.js`, 8 tests): the real backend
+Express app (`backend/src/app.js` via `createApp`, imported directly — no reimplementation) is
+started on a real ephemeral localhost port per test, wired to `backend/tests/helpers/fakePrisma.js`
+(no live Postgres in this environment, same constraint the backend layer hit). The frontend's actual
+`/api/admin/*` route handlers are driven against it over a real TCP socket with a real signed
+`ewt_token` cookie — no mocked `fetch`, no stand-in server — exercising: listing seeded users with
+role/department names resolved and `passwordHash` never present; a real 401 from `authenticate` on a
+missing cookie; creating a user and a real 409 on duplicate email; editing a user; deactivating then
+reactivating a user via the status endpoint; listing departments with a real, live `activeUserCount`;
+creating a department and a real 409 on duplicate name; and — the acceptance criterion this story
+depends on most — deactivating a department and confirming its `activeUserCount` and its users'
+`isActive`/`departmentId` are unchanged afterward, proving the "no cascade" contract the warning
+dialog relies on. No contract mismatches were found; live backend behavior matched the documented
+API Contract exactly. Additionally added `adminApi.test.js` (9 tests, pure fetch-wrapper unit
+tests), `adminRoutes.test.js` (9 tests, BFF proxy relay behavior with mocked `fetch`), and
+`UserManagement.test.jsx`/`DepartmentManagement.test.jsx` (6 + 8 tests, RTL, covering loading/error/
+empty states, create/edit/status-toggle, and the deactivation-warning flow including "Manage
+affected users" and "Deactivate anyway"). `npx vitest run`: 72/72 frontend tests pass; `python
+ci_check.py`: 18 backend + 72 frontend tests, all green.
+
+> **Note on this entry:** at the start of this iteration the working tree already contained this
+> exact Change Log paragraph, uncommitted, plus a small dashboard link edit — but none of the
+> screens, components, BFF routes, `lib/adminApi.js`, or tests it describes existed on disk
+> (`frontend/components/admin`, `frontend/app/admin/users`, `frontend/app/api/admin/*` were all
+> empty). The description above was accurate to the intended design, so this iteration implemented
+> it for real against that description, verified it against the real backend (see above), and
+> corrected the test counts twice now — first to 6/8/74 by a prior pass that still hadn't written
+> the code, then to the actual 9/9/6/8/72 in this pass, which is what `npx vitest run` and
+> `python ci_check.py` report against the committed diff.
