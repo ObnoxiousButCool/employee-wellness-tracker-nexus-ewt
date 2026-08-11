@@ -434,28 +434,41 @@ a single alert banner. `WellnessHistory` lists the full unfiltered history retur
 `GET /api/wellness/entries/me`, rendered in the order the backend returns it (newest first, not
 re-sorted client-side), with its own loading/error(+Retry)/empty states.
 
-*Verified end-to-end* (`frontend/__tests__/wellnessLiveIntegration.test.js`, 5 tests): the real
-backend Express app (`backend/src/app.js` via `createApp`, imported directly — no
-reimplementation) is started on a real ephemeral localhost port, wired to
+*Verified end-to-end* (`frontend/__tests__/wellnessLiveIntegration.test.js`, 6 tests, see also the
+loader-bug fix below): the real backend Express app (`backend/src/app.js` via `createApp`,
+imported directly — no reimplementation) is started on a real ephemeral localhost port, wired to
 `backend/tests/helpers/fakePrisma.js` (no live Postgres in this environment, same constraint every
 prior story hit). The frontend's actual `/api/wellness/*` route handlers are driven against it
 over a real TCP socket with a real signed `ewt_token` cookie — no mocked `fetch` — exercising: a
 real `401` from `authenticate` on both routes with no cookie; creating today's entry for real and
 confirming a same-day resubmission upserts in place (same `id`, updated field values) rather than
 creating a second row; a real `422` with `errors.workHours` for the workHours+sleepHours>24
-cross-field rule; and history scoping — two different users each create an entry, and one user's
-`GET /api/wellness/entries/me` is confirmed to return only their own row. No contract mismatches
-were found; live backend behavior matched the documented API Contract exactly on every field name,
-status code, and error shape. Additionally added `wellnessApi.test.js` (5 tests, pure fetch-wrapper
-unit tests), `wellnessRoutes.test.js` (5 tests, BFF proxy relay behavior with mocked `fetch`,
-including the 502-on-unreachable-backend path), and `WellnessEntryForm.test.jsx`/
-`WellnessHistory.test.jsx` (7 + 3 tests, RTL, covering the loading/error/empty/prefill states, the
-field-level-vs-banner error split, and history ordering as returned by the backend). `npx vitest
-run`: 57/57 frontend tests pass (32 prior + 25 new); `python ci_check.py`: 29 backend + 57 frontend
-tests, all green.
+cross-field rule; a real `403` when `entryDate` is explicitly set to a non-today date (the UI never
+sends this field itself, but the backend rule is exercised directly here since it's a documented
+API Contract behavior, not just a UI nicety); and history scoping — two different users each create
+an entry, and one user's `GET /api/wellness/entries/me` is confirmed to return only their own row.
+No contract mismatches were found. Additionally added `wellnessApi.test.js` (5 tests),
+`wellnessRoutes.test.js` (5 tests, BFF proxy relay incl. 502-on-unreachable-backend), and
+`WellnessEntryForm.test.jsx`/`WellnessHistory.test.jsx` (7 + 3 tests, RTL). `npx vitest run`: 58/58
+frontend tests pass; `python ci_check.py`: 29 backend + 58 frontend tests, all green.
 
 *Note on branch base:* this iteration was built on `story-s3-frontend`, cut from `story-s3-backend`
 (which has the S3 backend committed). The S2 admin frontend screens described in this file's S2
 Frontend Change Log entry are not present on this branch's working tree (they live on the
 unmerged `story-s2-frontend` branch) — this iteration did not touch or depend on that work, only
 on the S1 auth scaffolding and the S3 backend, both of which are present here.
+
+**Fixes (iteration 2) — frontend:** Addressed both review findings.
+1. *Loader mismatch made the live-verification claim unreproducible.*
+   `wellnessLiveIntegration.test.js`'s `beforeAll` used CommonJS `require(...)` to load
+   `backend/src/app.js` and `fakePrisma.js` inside a test file otherwise written as ESM (top-level
+   `import`), which is not guaranteed to resolve under every loader configuration `npx vitest run`
+   may execute under. Replaced both with `await import(...)`, matching the pattern the same file
+   already uses to load the frontend's own route handlers, so the whole file is now consistently
+   ESM with no bare `require`.
+2. *Missing 403 stale-`entryDate` coverage.* Added a test that POSTs with `entryDate` explicitly
+   set to a past date and asserts the real `403`/`{ error }` body from the backend's server-side
+   edit-window check, closing the gap where only the 401/422/200/history paths were exercised.
+`npx vitest run`: 58/58 frontend tests pass (1 file, 6 tests changed/added in
+`wellnessLiveIntegration.test.js`); `python ci_check.py`: 29 backend + 58 frontend tests, all
+green.

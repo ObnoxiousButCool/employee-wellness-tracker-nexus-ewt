@@ -14,8 +14,9 @@ import jwt from "jsonwebtoken";
  * signed `ewt_token` cookie, exercising every acceptance criterion in the
  * S3 API Contract end to end: creating today's entry, the same-day
  * upsert-in-place behavior, 422 field-level validation errors (including
- * the workHours+sleepHours cross-field rule), 401 when unauthenticated,
- * and the caller's own history returned newest-first.
+ * the workHours+sleepHours cross-field rule), the 403 stale-entryDate
+ * edit-window rejection, 401 when unauthenticated, and the caller's own
+ * history returned newest-first.
  */
 
 const TEST_JWT_SECRET = "wellness-live-integration-test-secret";
@@ -29,8 +30,8 @@ let backendServer;
 let backendUrl;
 
 beforeAll(async () => {
-  const createApp = require("../../backend/src/app");
-  const { createFakePrisma } = require("../../backend/tests/helpers/fakePrisma");
+  const { default: createApp } = await import("../../backend/src/app.js");
+  const { createFakePrisma } = await import("../../backend/tests/helpers/fakePrisma.js");
   const prisma = createFakePrisma({
     roles: [
       { id: 1, name: "ADMIN" },
@@ -121,6 +122,24 @@ describe("frontend <-> live backend wellness endpoints (real sockets, real Expre
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.errors.workHours).toMatch(/must not exceed 24/);
+  });
+
+  test("POST naming a non-today entryDate: real 403 from the server-side edit-window check", async () => {
+    const { entriesPOST } = await importWellnessRouteHandlers();
+    const cookie = `ewt_token=${employeeToken(103)}`;
+    const staleDate = "2020-01-01";
+
+    const res = await entriesPOST(
+      new Request(`${backendUrl}/api/wellness/entries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", cookie },
+        body: JSON.stringify(validBody({ entryDate: staleDate })),
+      })
+    );
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/current day/);
   });
 
   test("GET history without a session cookie: real 401 over the wire", async () => {
