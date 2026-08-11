@@ -143,6 +143,21 @@ describe("UserManagement", () => {
     expect(screen.getByRole("dialog", { name: /create user/i })).toBeInTheDocument();
   });
 
+  test("role picker offers every documented role even when no loaded user has it yet", async () => {
+    mockFetchImplementation(); // only an ADMIN user is loaded
+
+    render(<UserManagement />);
+    await screen.findByText("Ann Admin");
+
+    fireEvent.click(screen.getByRole("button", { name: /create user/i }));
+    const dialog = screen.getByRole("dialog", { name: /create user/i });
+    const roleSelect = within(dialog).getByLabelText("Role");
+
+    expect(within(roleSelect).getByRole("option", { name: "ADMIN" })).toBeInTheDocument();
+    expect(within(roleSelect).getByRole("option", { name: "MANAGER" })).toBeInTheDocument();
+    expect(within(roleSelect).getByRole("option", { name: "EMPLOYEE" })).toBeInTheDocument();
+  });
+
   test("toggling status calls PATCH .../status and refreshes the row", async () => {
     let isActive = true;
     global.fetch = vi.fn((url, options) => {

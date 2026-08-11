@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { fetchUsers, fetchDepartments, setUserStatus } from "../../lib/adminApi";
+import { buildRoleOptions } from "../../lib/adminRoleCatalog";
 import UserFormDialog from "./UserFormDialog";
 
 const PAGE_SIZE = 20;
@@ -55,9 +56,10 @@ export default function UserManagement() {
     load();
   }, [load]);
 
-  const roleOptions = Array.from(
-    new Map(users.filter((u) => u.roleId != null).map((u) => [u.roleId, { roleId: u.roleId, role: u.role }])).values()
-  );
+  const observedRoles = users
+    .filter((u) => u.roleId != null)
+    .map((u) => ({ roleId: u.roleId, role: u.role }));
+  const roleOptions = buildRoleOptions(observedRoles);
 
   function handleFilterSubmit(event) {
     event.preventDefault();
