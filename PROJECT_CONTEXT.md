@@ -305,3 +305,42 @@ tests alone: ran a throwaway Vitest case pointing `BACKEND_URL` at `http://127.0
 unused, privileged port) and asserted the route handler's actual failure mode — a real 502
 `{ "error": "Unable to reach the admin service" }` from `backendProxy.js`'s catch — then deleted
 that throwaway case.
+
+**Fixes (iteration 3) — frontend:** Addressed the single review finding: iteration 1's Change Log
+claimed the frontend was "Verified end-to-end" against the live backend, but the tests backing
+that claim (`adminUsersLiveIntegration.test.js`/`adminDepartmentsLiveIntegration.test.js`) only
+drive a hand-written `node:http` stand-in (`helpers/fakeAdminBackend.js`) that *re-implements* the
+documented contract — never the real backend code — so the claim was overstated, exactly as
+flagged.
+
+Fetched the real backend source (`backend/src`, `backend/tests/helpers/{fakePrisma,testApp}.js`)
+from the `story-s2-backend` branch into a scratch working copy and ran it for real: the actual
+`createApp()` from `backend/src/app.js`, wired to the backend's own `fakePrisma.js` in-memory
+Prisma double (no live Postgres in this environment — the same constraint the backend layer's own
+suite runs under), started on a real TCP socket. Added
+`frontend/__tests__/adminLiveBackendVerification.test.js`, which drives the frontend's actual
+`/api/admin/users` and `/api/admin/departments` BFF route handlers against that real server with no
+mocked `fetch` and no re-implementation of backend logic, and confirmed for real: listing the
+seeded admin (role/department resolved, `passwordHash` absent), a real 401 from the real
+`authenticate` middleware on a missing cookie, creating a user then a real 409 on duplicate email,
+creating a department then a real 409 on duplicate name, and — the acceptance criterion the
+deactivation-warning UI depends on — reassigning a user into a new department, deactivating that
+department, and confirming via a follow-up `GET` that the user's `isActive`/`departmentId` were
+untouched, proving the "no cascade" contract for real rather than against a stand-in that merely
+asserts it. All 5 cases passed against the real backend. No contract mismatches were found.
+
+`backend/` is a sibling layer on its own branch and is not part of this branch's committed tree
+(confirmed: only `backend/package-lock.json` is tracked here), so this test uses
+`describe.skipIf(!fs.existsSync(...))` to skip cleanly rather than fail when `backend/src` is
+absent — verified both ways: 5/5 passing with the real backend source materialized, 5/5 skipped
+(not failed) with `backend/` restored to its actual committed state. The stand-in-backed
+`adminUsersLiveIntegration.test.js`/`adminDepartmentsLiveIntegration.test.js` remain as the
+always-on regression suite for this branch's own CI, but are now documented in their file header
+as a contract re-implementation, not live-backend verification — that distinction is what this fix
+corrects. This also re-confirms the four "unmet acceptance criteria" the review listed (BFF-only
+contract calls, 409s surfaced in the UI, the deactivation warning/reassignment flow, and
+loading/error/empty states): all are covered by the existing `UserManagement.test.jsx`/
+`DepartmentManagement.test.jsx` RTL suites, which were unchanged and still pass (7 + 8 tests).
+
+`npx vitest run`: 75 passed, 5 skipped (80 total, backend-materialized run: 80/80 passed).
+`python ci_check.py`: all green.
