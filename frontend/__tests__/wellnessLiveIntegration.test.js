@@ -6,17 +6,23 @@ import jwt from "jsonwebtoken";
  * Real backend, real sockets, real code — no mocked `fetch`, no stand-in
  * server. Imports the backend's actual Express app (`backend/src/app.js`
  * via `createApp`) and starts it on a real ephemeral localhost port, wired
- * to the backend's own in-memory Prisma fake (`backend/tests/helpers/
- * fakePrisma.js`) since no live Postgres is available in this environment
- * (the same constraint the backend layer and the S2 admin frontend layer
+ * to this frontend layer's OWN in-memory Prisma fake
+ * (`__tests__/helpers/wellnessFakePrisma.js`) rather than the backend's
+ * test-only `backend/tests/helpers/fakePrisma.js` — importing a backend
+ * test helper from a frontend test coupled this suite to a file the
+ * frontend does not own. `wellnessFakePrisma.js` implements only the
+ * `wellnessEntry` model the wellness routes touch, since no live Postgres
+ * is available in this environment (the same constraint every prior story
  * hit). The frontend's actual `/api/wellness/*` route handlers are then
- * driven against that real server over a real TCP socket with a real
+ * driven against the real server over a real TCP socket with a real
  * signed `ewt_token` cookie, exercising every acceptance criterion in the
  * S3 API Contract end to end: creating today's entry, the same-day
  * upsert-in-place behavior, 422 field-level validation errors (including
  * the workHours+sleepHours cross-field rule), the 403 stale-entryDate
  * edit-window rejection, 401 when unauthenticated, and the caller's own
- * history returned newest-first.
+ * history returned newest-first — proven with 3+ distinct pre-seeded
+ * dates per user, not just "all rows belong to this user" (see the
+ * ordering test below).
  */
 
 const TEST_JWT_SECRET = "wellness-live-integration-test-secret";
@@ -28,17 +34,12 @@ function employeeToken(userId = 1) {
 
 let backendServer;
 let backendUrl;
+let prisma;
 
 beforeAll(async () => {
   const { default: createApp } = await import("../../backend/src/app.js");
-  const { createFakePrisma } = await import("../../backend/tests/helpers/fakePrisma.js");
-  const prisma = createFakePrisma({
-    roles: [
-      { id: 1, name: "ADMIN" },
-      { id: 2, name: "MANAGER" },
-      { id: 3, name: "EMPLOYEE" },
-    ],
-  });
+  const { createWellnessFakePrisma } = await import("./helpers/wellnessFakePrisma.js");
+  prisma = createWellnessFakePrisma();
   const app = createApp({ prisma });
 
   await new Promise((resolve) => {
@@ -178,5 +179,41 @@ describe("frontend <-> live backend wellness endpoints (real sockets, real Expre
     const body = await res.json();
     expect(body.data.every((entry) => entry.userId === 201)).toBe(true);
     expect(body.data.length).toBeGreaterThan(0);
+  });
+
+  test("GET history genuinely orders multiple entries newest-first, over real sockets", async () => {
+    // POST always upserts *today's* row (edit-window rule), so it cannot
+    // by itself produce more than one dated row per user. To prove the
+    // ordering contract for real, seed three distinct-date rows directly
+    // in the shared fake store the live backend is wired to, then drive
+    // the frontend's real GET handler over the real socket and assert the
+    // response is strictly newest-first, not just "one row, trivially
+    // sorted".
+    const { entriesMeGET } = await importWellnessRouteHandlers();
+    const userId = 301;
+    const cookie = `ewt_token=${employeeToken(userId)}`;
+    const dates = ["2026-01-01", "2026-03-15", "2026-02-10"];
+    for (const date of dates) {
+      await prisma.wellnessEntry.upsert({
+        where: { userId_entryDate: { userId, entryDate: new Date(`${date}T00:00:00.000Z`) } },
+        create: {
+          userId,
+          entryDate: new Date(`${date}T00:00:00.000Z`),
+          stressLevel: 5,
+          workHours: 8,
+          sleepHours: 7,
+          mood: "GOOD",
+          energyLevel: "HIGH",
+        },
+        update: {},
+      });
+    }
+
+    const res = await entriesMeGET(new Request(`${backendUrl}/api/wellness/entries/me`, { headers: { cookie } }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const ownEntryDates = body.data.filter((entry) => entry.userId === userId).map((entry) => entry.entryDate);
+    expect(ownEntryDates).toEqual(["2026-03-15", "2026-02-10", "2026-01-01"]);
   });
 });

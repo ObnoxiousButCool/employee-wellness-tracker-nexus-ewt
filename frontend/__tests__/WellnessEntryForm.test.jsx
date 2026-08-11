@@ -63,13 +63,14 @@ describe("WellnessEntryForm", () => {
   });
 
   test("prefills the form when an entry already exists for today", async () => {
+    const todayIso = new Date().toISOString().slice(0, 10);
     global.fetch.mockResolvedValue(
       fakeResponse({
         ok: true,
         status: 200,
         body: {
           data: [
-            { id: 1, entryDate: "2026-08-11", stressLevel: 4, workHours: 6, sleepHours: 8, mood: "NEUTRAL", energyLevel: "MEDIUM" },
+            { id: 1, entryDate: todayIso, stressLevel: 4, workHours: 6, sleepHours: 8, mood: "NEUTRAL", energyLevel: "MEDIUM" },
           ],
         },
       })
