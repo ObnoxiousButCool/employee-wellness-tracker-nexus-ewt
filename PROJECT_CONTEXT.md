@@ -703,3 +703,37 @@ ADMIN-only department filter, the sort-column toggle, and the zero-`entryCount` 
 `npx vitest run`: 143/143 frontend tests pass (107 prior + 36 new: 6 + 7 + 6 + 4 + 3 unit/RTL tests
 above, plus the 10-test live-backend suite). `python ci_check.py`: 47 backend + 143 frontend tests,
 all green.
+
+**Fixes (iteration 2) — frontend:** Addressed the single review finding: iteration 1's
+`wellnessReportsLiveBackendVerification.test.js` gated its `describe` block behind
+`describe.skipIf(!fs.existsSync(".../backend/src/app.js"))`, so the frontend diff alone did not
+guarantee the claimed end-to-end verification actually executes — any checkout/CI configuration
+where `backend/src` isn't materialized alongside this branch would see the suite silently skip
+rather than fail, making the "verified end-to-end" claim unsubstantiated from the diff itself. It
+also imported the backend's own `backend/tests/helpers/fakePrisma.js`, a test helper this layer
+doesn't own.
+
+Removed the `describe.skipIf` guard entirely — the suite is now unconditional, matching the
+precedent `wellnessLiveIntegration.test.js` (S3 iteration 3) already set. Replaced the
+`backend/tests/helpers/fakePrisma.js` import with this layer's own
+`__tests__/helpers/wellnessFakePrisma.js`, extended with a `user` model (`findMany` supporting
+`departmentId`/`id: { in }` filters, `findUnique`) and a generic `wellnessEntry.findMany`/`count`
+(any `orderBy` field, not just `entryDate`, plus `userId: { in }`/`mood` filtering) — exactly the
+Prisma surface `wellnessHistoryController.js`, `employeeProfileController.js`, and
+`enforceEmployeeDepartmentScope.js` call, checked against those controllers' source directly.
+`wellnessLiveIntegration.test.js`'s existing `createWellnessFakePrisma()` calls are unaffected
+(the new `users` option defaults to `[]`).
+
+The real `backend/src/app.js` (via `createApp`, imported directly — `backend/src` is committed on
+this branch, confirmed via `git ls-files`) is still what's under test; only the Prisma double wired
+into it changed. Re-ran all 10 cases against the real Express app, real middleware, and real
+controllers: all still pass, covering the same acceptance criteria as iteration 1 — manager
+department scoping ignoring a client-supplied `department`, ADMIN department filtering, an
+out-of-scope `userId` returning an empty page rather than a 403, the `sortBy`/`sortOrder` toggle,
+the EMPLOYEE-role 403, profile stat averaging, the manager cross-department 403, the
+nonexistent-employee 404, and the trend series' oldest-first ordering plus invalid-metric 400. No
+contract mismatches were found.
+
+`npx vitest run`: 143/143 frontend tests pass (unchanged count — this is a rewrite of the existing
+10-test file's fixture wiring, not new coverage). `python ci_check.py`: 47 backend + 143 frontend
+tests, all green.
