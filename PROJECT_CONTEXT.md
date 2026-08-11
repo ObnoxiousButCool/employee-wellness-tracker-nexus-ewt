@@ -15,14 +15,22 @@ server component.
 ```
 backend/
   package.json, .env.example
-  prisma/schema.prisma, prisma/migrations/20260810000000_init/migration.sql
+  prisma/schema.prisma
+  prisma/migrations/20260810120000_init_roles_departments_users_wellness/migration.sql
+  prisma/migrations/20260811090000_add_users_department_status_index/migration.sql
   src/
-    app.js, server.js
+    app.js                          # createApp({ prisma }) factory, injectable for tests
+    server.js
     config/env.js, config/prisma.js
-    models/userModel.js
     middleware/authenticate.js, middleware/requireRole.js
-    routes/authRoutes.js            # POST /api/auth/login, POST /api/auth/logout
-  tests/auth.test.js, tests/requireRole.test.js
+    controllers/adminUsersController.js, controllers/adminDepartmentsController.js,
+    controllers/adminRolesController.js
+    routes/adminRoutes.js           # mounts /api/admin/* , requires ADMIN
+    utils/validators.js, utils/pagination.js, utils/asyncHandler.js
+  tests/
+    adminUsers.test.js, adminDepartments.test.js, adminRoles.test.js, authMiddleware.test.js
+    helpers/fakePrisma.js           # in-memory Prisma double, no live DB in this environment
+    helpers/testApp.js
 
 frontend/
   package.json, next.config.js, vitest.config.js, vitest.setup.js, .env.example
@@ -100,19 +108,82 @@ backend's `Secure`/`SameSite=Strict` cookie and the frontend's origin are never 
   frontend origin — even if the backend call itself fails/times out, so the browser is never
   left half-signed-out.
 
+## 3a. Admin CRUD endpoints — introduced in S2 (Backend)
+All routes below are mounted under `/api/admin` and require `authenticate` + `requireRole(["ADMIN"])`
+(`401` if no/invalid session, `403` if the session's role isn't `ADMIN`).
+
+- **`GET /api/admin/roles`** — introduced in S2 fix iteration 3. Read-only lookup of the
+  canonical `roles` table (no filters/pagination). `200`: `{ data: [{ id, name }] }`, ordered by
+  `id`. Lets the frontend populate a complete role picker on a fresh install, even for a role
+  with zero existing users, instead of inferring roles from `GET /api/admin/users` results —
+  closes the "Contract gap" the frontend's S2 iteration-1 Change Log entry documented.
+- **`GET /api/admin/users?search=&department=&status=&page=&pageSize=`** — case-insensitive
+  `search` on `name`/`email`; `department` filters by id; `status` is `active`|`inactive`;
+  `page`/`pageSize` default `1`/`20`, capped at `100`. `200`: `{ data: [{ id, name, email, roleId,
+  role, departmentId, department, isActive, createdAt, updatedAt }], pagination: { page, pageSize,
+  total, totalPages } }`. Never returns `passwordHash`.
+- **`POST /api/admin/users`** — body `{ name, email, password, roleId, departmentId? }`; bcrypt
+  cost 10. `201` created user. `400` invalid/missing fields, `409` duplicate email, `400` bad
+  `roleId`/`departmentId` FK.
+- **`PUT /api/admin/users/:id`** — body: any of `{ name, email, roleId, departmentId }`. `200`
+  updated user, `409` duplicate email, `404` missing, `400` bad FK.
+- **`PATCH /api/admin/users/:id/status`** — body `{ isActive: boolean }`; soft toggle only. `200`
+  updated user, `404` missing.
+- **`GET /api/admin/departments?status=`** — `200`: `{ data: [{ id, name, isActive,
+  activeUserCount }] }`; `activeUserCount` is the live count of active users assigned to it.
+- **`POST /api/admin/departments`** — body `{ name, isActive? }` (default `true`). `201` created,
+  `409` duplicate name.
+- **`PUT /api/admin/departments/:id`** — body: any of `{ name, isActive }`; covers both rename and
+  soft-status toggle (no separate status route). Deactivating never touches `users`; response's
+  `activeUserCount` drives the frontend's reassignment/deactivation warning. `409` duplicate name,
+  `404` missing.
+
+> **Auth prerequisite gap:** S1's documented backend was never actually committed (only
+> `backend/package-lock.json` was tracked; `src`/`prisma`/`tests` were empty). This iteration
+> rebuilt `authenticate.js`/`requireRole.js` (same JWT contract as documented) so the new admin
+> routes work, but `POST /api/auth/login`/`logout` remain missing — a future iteration must add
+> them before the frontend login flow is reachable end-to-end.
+
 ## 4. Data Models (cumulative)
 
-### `users` table — introduced in S1 (Backend), Prisma model `User`
+### `roles` table — introduced in S2 (Backend), Prisma model `Role`
+| Field  | Type                     | Notes                                              |
+|--------|--------------------------|-----------------------------------------------------|
+| `id`   | `Int` (PK, autoincrement)|                                                       |
+| `name` | `String`, unique         | seeded with `ADMIN`, `MANAGER`, `EMPLOYEE`           |
+
+### `departments` table — introduced in S2 (Backend), Prisma model `Department`
+| Field       | Type                        | Notes                        |
+|-------------|-----------------------------|-------------------------------|
+| `id`        | `Int` (PK, autoincrement)   |                                |
+| `name`      | `String`, unique            | column `name`                 |
+| `isActive`  | `Boolean`, default `true`   | column `is_active`, soft-delete only |
+
+### `users` table — redefined in S2 (Backend, supersedes the S1-documented enum-based shape
+that was never committed), Prisma model `User`
 | Field           | Type                              | Notes                                   |
 |-----------------|------------------------------------|------------------------------------------|
 | `id`            | `Int` (PK, autoincrement)          |                                          |
-| `email`         | `String`, unique                   |                                          |
-| `password`      | `String`                           | bcrypt hash, cost factor 10; never plaintext |
-| `role`          | `Role` enum (`ADMIN`, `MANAGER`, `EMPLOYEE`) |                                |
-| `departmentId`  | `Int?` (column `department_id`)    | nullable; no FK table yet                |
-| `active`        | `Boolean`, default `true`          | checked on every login attempt           |
-| `createdAt`     | `DateTime`, default now            | column `created_at`                      |
-| `updatedAt`     | `DateTime`, auto-updated           | column `updated_at`                      |
+| `name`          | `String`                           |                                          |
+| `email`         | `String`, unique                   | `409` on conflict at the API layer       |
+| `passwordHash`  | `String` (column `password_hash`)  | bcrypt hash, cost factor 10; never plaintext |
+| `roleId`        | `Int` (column `role_id`)           | FK → `roles.id`, `ON DELETE RESTRICT`    |
+| `departmentId`  | `Int?` (column `department_id`)    | FK → `departments.id`, `ON DELETE RESTRICT`, nullable |
+| `isActive`      | `Boolean`, default `true` (column `is_active`) | soft-delete only, via status endpoint |
+| `createdAt`     | `DateTime`, default now (column `created_at`) |                                |
+| `updatedAt`     | `DateTime`, auto-updated (column `updated_at`) |                               |
+
+Composite index `users_department_id_is_active_idx` on `(department_id, is_active)` — introduced
+in S2 fix iteration 3 (migration `20260811090000_add_users_department_status_index`) — covers the
+`department`+`status` filter combination `GET /api/admin/users` supports, avoiding a full table
+scan as the table grows.
+
+### `wellness_entries` table — introduced in S2 (Backend), Prisma model `WellnessEntry`
+| Field        | Type                              | Notes                                   |
+|--------------|-------------------------------------|------------------------------------------|
+| `id`         | `Int` (PK, autoincrement)          |                                          |
+| `userId`     | `Int` (column `user_id`)           | FK → `users.id`, `ON DELETE RESTRICT`    |
+| `entryDate`  | `Date` (column `entry_date`)       | foundation only; future stories add fields |
 
 ## 5. Change Log (per story, per layer)
 
@@ -177,31 +248,66 @@ tests total) covering the forgery and half-signed-out fixes with real signed JWT
 
 ### Story S2
 **Backend (iteration 1):** Found that S1's documented backend was never actually committed (see
-the API Contract callout above) — `backend/` had only `package-lock.json` tracked in git and
-empty `src`/`prisma`/`tests` directories on disk, plus a `node_modules` install with no
-`package.json`. Rebuilt the backend runtime from scratch on top of that pre-existing
-`node_modules` (added `backend/package.json`, restored `express`/`bcrypt`/`jsonwebtoken`/
-`cookie-parser`/`@prisma/client`/`prisma`/`supertest`/`dotenv` after an errant `npm install
-dotenv` without a `package.json` had pruned them; `npm install` restored all 167 packages).
-Added `prisma/schema.prisma` and migration `20260810120000_init_roles_departments_users_wellness`
+the API Contract callout above) — only `package-lock.json` was tracked, with empty
+`src`/`prisma`/`tests` dirs. Rebuilt the backend runtime from scratch on the pre-existing
+`node_modules` (added `backend/package.json`, `npm install` restored dependencies). Added
+`prisma/schema.prisma` and migration `20260810120000_init_roles_departments_users_wellness`
 creating `roles` (seeded `ADMIN`/`MANAGER`/`EMPLOYEE`), `departments`, `users`, and
 `wellness_entries` per the technical plan, all FKs `ON DELETE RESTRICT`, `UNIQUE` on
-`users.email` and `departments.name`. Implemented `authenticate.js`/`requireRole.js`
-(unchanged JWT contract from S1's docs) and the seven `/api/admin/*` endpoints listed in the API
-Contract, all ADMIN-only. Email/department-name uniqueness is enforced by the DB `UNIQUE`
-constraint and re-checked at the API layer (Prisma `P2002` → `409`); FK violations on
-`roleId`/`departmentId` → `400`; missing rows → `404`. Deactivating a department only ever
-writes to `departments` — it never touches `users` — and each department response includes
-`activeUserCount` so the frontend can build the required reassignment/deactivation warning.
-No live Postgres was available in this environment (`psql`/Docker daemon absent), so
-`backend/tests/helpers/fakePrisma.js` is an in-memory double implementing the exact subset of the
-Prisma Client API the controllers call (including Prisma's real `P2002`/`P2003`/`P2025` error
-shapes), and `backend/tests/helpers/testApp.js` builds the real Express app via
-`createApp({ prisma })` against it — tests drive real HTTP requests through supertest with real
-JWTs, no controller mocking. `adminUsers.test.js`, `adminDepartments.test.js`,
-`authMiddleware.test.js` (18 tests, all passing via `node --test`), wired into `ci_check.py`
-(already supported `backend/tests/*.test.js` and per-layer `node --check`, unchanged). Full
-`python ci_check.py` passes (18 backend + 32 frontend tests).
+`users.email`/`departments.name`. Implemented `authenticate.js`/`requireRole.js` (unchanged JWT
+contract) and the seven `/api/admin/*` endpoints in the API Contract, all ADMIN-only. Uniqueness
+enforced at the DB and re-checked at the API layer (Prisma `P2002` → `409`); FK violations → `400`;
+missing rows → `404`. Deactivating a department only ever writes to `departments`, never `users`;
+each response includes `activeUserCount`. No live Postgres was available, so
+`backend/tests/helpers/fakePrisma.js` is an in-memory double of the Prisma Client subset the
+controllers call (real `P2002`/`P2003`/`P2025` error shapes), and
+`backend/tests/helpers/testApp.js` builds the real Express app against it — tests drive real HTTP
+requests via supertest, no controller mocking. `adminUsers.test.js`, `adminDepartments.test.js`,
+`authMiddleware.test.js` (18 tests, `node --test`), wired into `ci_check.py`. `python ci_check.py`
+passed (18 backend + 32 frontend tests).
+
+**Fixes (iteration 2) — backend:** Addressed all four review findings.
+1. *JWT secret handling (high severity).* `config/env.js` defaulted `jwtSecret` to `""` when
+   `JWT_SECRET` was unset, so `jwt.verify(token, "")` would have accepted a token forged with an
+   empty signing secret — a real admin-session forgery path in any deployment that forgot to set
+   the env var. Fixed by throwing at startup if `JWT_SECRET` is missing/empty, matching the
+   frontend's already-required shared-secret contract.
+2. *Non-portable test script.* `package.json`'s `"test": "node --test tests/*.test.js"` relies on
+   the shell to expand the glob, which `cmd.exe`/Windows `npm test` does not do, silently running
+   zero tests there. Changed to `"test": "node --test"`, which uses Node's own recursive test-file
+   discovery (no shell glob) and needs no shell-specific quoting; `ci_check.py`'s explicit
+   `glob("*.test.js")` invocation (Python-side, always portable) is unchanged.
+3. *N+1 count query.* `listDepartments` ran one `prisma.user.count` per department row via
+   `Promise.all`. Replaced with a single `prisma.user.groupBy({ by: ["departmentId"], where: {
+   departmentId: { in: rows.map(r => r.id) }, isActive: true }, _count: { _all: true } })` and a
+   lookup map, so listing N departments now issues one query instead of N. Added `groupBy` and
+   `{ in: [...] }` where-clause support to `fakePrisma.js` to cover this in tests.
+4. *`PROJECT_CONTEXT.md` line budget.* Condensed this story's Backend-authored sections (the
+   Admin CRUD contract, the auth-prerequisite callout, and this Change Log entry) without dropping
+   any endpoint, schema, or fix detail.
+`backend/tests/adminDepartments.test.js`'s existing "lists departments with active user counts"
+test exercises the new `groupBy` path unchanged. `npm test` (18/18) and `python ci_check.py`
+(18 backend + 72 frontend) both pass.
+
+**Fixes (iteration 3) — backend:** Addressed both review findings.
+1. *Missing roles lookup endpoint.* A fresh install with zero users had no way to populate a
+   complete role picker, since roles could previously only be inferred from existing
+   `GET /api/admin/users` rows (see the frontend's iteration-1 "Contract gap" note below). Added
+   `backend/src/controllers/adminRolesController.js` (`listRoles`) and wired
+   `GET /api/admin/roles` into `backend/src/routes/adminRoutes.js`, ADMIN-protected via the same
+   `authenticate`/`requireRole(["ADMIN"])` middleware as the other admin routes; returns
+   `{ data: [{ id, name }] }` ordered by `id`, straight from the canonical `roles` table. Added
+   `backend/tests/adminRoles.test.js` (2 tests: 401 unauthenticated, 200 listing the 3 seeded
+   roles) and extended `backend/tests/helpers/fakePrisma.js`'s `role.findMany` to honor
+   `orderBy: { id: "asc" }`.
+2. *No composite index for the `users` admin path at scale.* `GET /api/admin/users` filters on
+   `department` and `status` together but the table had no supporting index beyond the PK and the
+   `email` unique index, so both filters would force a full scan as `users` grows. Added
+   `@@index([departmentId, isActive])` to the `User` model in `prisma/schema.prisma` and migration
+   `20260811090000_add_users_department_status_index` (`CREATE INDEX
+   users_department_id_is_active_idx ON users(department_id, is_active)`).
+`node --test` in `backend/`: 20/20 passing (18 prior + 2 new). `python ci_check.py`: 20 backend +
+32 frontend tests, all green.
 
 **Frontend (iteration 1):** Added `/admin/users` and `/admin/departments` under `frontend/app/admin/`
 (both `RoleGuard`-wrapped to ADMIN, linked from the admin dashboard), backed by `UserManagement.jsx`
