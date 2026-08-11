@@ -377,26 +377,35 @@ ci_check.py`: 18 backend + 72 frontend tests, all green.
 > `python ci_check.py` report against the committed diff.
 
 ### Story S3
-**Backend (iteration 1):** Added the daily wellness check-in fields to `wellness_entries` (the
-table itself was created empty in S2 as a "foundation only" placeholder) via migration
-`20260812100000_add_wellness_entry_fields`: `stress_level`, `work_hours`/`sleep_hours`
-(`Decimal(4,2)`), `mood`/`energy_level` (new Postgres enums `Mood`/`EnergyLevel`), `created_at`,
-`updated_at`, plus `UNIQUE(user_id, entry_date)` (see Data Models). Implemented
-`POST /api/wellness/entries` (`src/controllers/wellnessEntriesController.js`) which always upserts
-the current user's row for the server-computed current calendar day, so a same-day resubmission
-edits in place; if the request names an `entryDate` other than today it is rejected `403` (the
-edit-window rule is enforced server-side, not left to the UI to hide). `stressLevel`/`workHours`/
-`sleepHours`/`mood`/`energyLevel` are validated with field-level `422` errors
+**Backend (iteration 1):** Added the daily wellness check-in fields to `wellness_entries` (created
+empty in S2 as a placeholder) via migration `20260812100000_add_wellness_entry_fields`:
+`stress_level`, `work_hours`/`sleep_hours` (`Decimal(4,2)`), `mood`/`energy_level` (new Postgres
+enums), `created_at`, `updated_at`, plus `UNIQUE(user_id, entry_date)` (see Data Models).
+Implemented `POST /api/wellness/entries` (`src/controllers/wellnessEntriesController.js`), always
+upserting the current user's row for today so a same-day resubmission edits in place; a request
+naming a different `entryDate` is rejected `403`. Field-level `422` validation
 (`validateWellnessEntry` in `utils/validators.js`), including the `workHours + sleepHours <= 24`
-cross-field rule reported under `errors.workHours`. Added `GET /api/wellness/entries/me?from=&to=`
-returning the caller's own history only, newest `entryDate` first, `400` on a malformed date
-bound. Both routes are mounted under `/api/wellness` (`src/routes/wellnessRoutes.js`) behind
-`authenticate` only — no role restriction, since every role logs their own entries. No live
-Postgres in this environment (same constraint prior stories hit), so
-`tests/helpers/fakePrisma.js` gained a `wellnessEntry` model (`findMany` with `gte`/`lte` date-range
-support, `upsert` on the composite `userId_entryDate` key) exercised by the real Express app via
-`testApp.js`, matching real Prisma's upsert/composite-unique semantics. `tests/wellnessEntries.test.js`
-(9 tests: 401s, 422 field errors, the cross-field 24h rule, create, same-day upsert-in-place, the
-403 non-today rejection, per-user history scoping/ordering, 400 on a bad date range), wired into
-the existing `node --test` run. `npm test` in `backend/`: 29/29 passing (20 prior + 9 new).
-`python ci_check.py`: 29 backend + 32 frontend tests, all green.
+cross-field rule under `errors.workHours`. Added `GET /api/wellness/entries/me?from=&to=`, caller's
+own history only, newest first, `400` on a malformed date bound. Both routes mounted under
+`/api/wellness` behind `authenticate` only (every role logs their own entries). No live Postgres in
+this environment, so `tests/helpers/fakePrisma.js` gained a `wellnessEntry` model exercised via the
+real Express app (`testApp.js`). `tests/wellnessEntries.test.js` (9 tests). `npm test`: 29/29
+passing. `python ci_check.py`: 29 backend + 32 frontend tests, all green.
+
+**Fixes (iteration 3) — backend:** Addressed both review findings.
+1. *Calendar-day correctness.* `todayDateString()`/`toDateOnlyString()` derived "today" and
+   serialized `entryDate` via `new Date().toISOString().slice(0, 10)` — a UTC day, not the server's
+   actual (local) calendar day. On any server not running in UTC, requests near local midnight could
+   read/write the wrong day (e.g. server local time already past midnight but UTC still on the prior
+   day, or vice versa), corrupting the "one entry per user per day" and 403 edit-window guarantees
+   the story requires. Rewrote both helpers, plus the new `parseDateOnly()`, to build/read dates from
+   local (`getFullYear`/`getMonth`/`getDate`) parts exclusively — `entryDate` is a `@db.Date` column
+   with no time/zone component, so the server's system-clock day is the sole source of truth, never
+   UTC. Added `tests/wellnessEntries.test.js` coverage: a direct unit test proving
+   `toDateOnlyString`/`parseDateOnly` read/round-trip local date parts (and diverge from
+   `toISOString()` on any non-UTC test host), plus updated the existing tests' own `todayDateString()`
+   helper to compute local date the same way so they stay correct on any host.
+2. *`PROJECT_CONTEXT.md` line budget.* Condensed the S3 Backend Change Log entry (this section)
+   without dropping any endpoint, schema, or fix detail.
+`node --test` in `backend/`: 31/31 passing (29 prior + 2 new). `python ci_check.py`: 31 backend +
+32 frontend tests, all green.
