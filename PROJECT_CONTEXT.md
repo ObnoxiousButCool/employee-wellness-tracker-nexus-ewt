@@ -174,6 +174,36 @@ role logs/reads their own entries — no `requireRole` restriction).
 - Entry shape: `{ id, userId, entryDate, stressLevel, workHours, sleepHours, mood, energyLevel,
   createdAt, updatedAt }`.
 
+## 3c. Manager/Admin wellness reporting endpoints — introduced in S4 (Backend)
+All three routes are mounted under `/api/wellness`, require `authenticate` +
+`requireRole(["ADMIN", "MANAGER"])` (`403` for `EMPLOYEE`), and the two `:id` routes additionally
+run `enforceEmployeeDepartmentScope` (`src/middleware/enforceEmployeeDepartmentScope.js`): it loads
+the target employee, `404`s if absent, and `403`s a `MANAGER` whose `departmentId` doesn't match the
+employee's — enforced in the route handler, never just hidden in the nav. `ADMIN` bypasses that
+check. No new tables back these routes — see the Data Models note below.
+
+- **`GET /api/wellness/history?userId=&department=&from=&to=&mood=&page=&pageSize=&sortBy=&sortOrder=`**
+  — grid query across all employees' entries. A `MANAGER`'s results are always scoped to their own
+  `departmentId` server-side; a client-supplied `department` value is ignored entirely for a
+  `MANAGER` (never trusted to widen or redirect scope), and a `userId` outside that scope returns an
+  empty page rather than an error. `sortBy` ∈ `entryDate|stressLevel|sleepHours` (default
+  `entryDate`), `sortOrder` ∈ `asc|desc` (default `desc`) — the grid's column-sort toggle.
+  `page`/`pageSize` default `1`/`20`, capped at `100` (shared `utils/pagination.js`). `200`:
+  `{ data: [{ id, userId, employeeName, departmentId, entryDate, mood, stressLevel, sleepHours,
+  energyScore }], pagination: { page, pageSize, total, totalPages } }`. `400`:
+  `{ errors: { <field>: message } }` for a malformed `from`/`to`/`mood`/`userId`/`department`/
+  `sortBy`/`sortOrder`.
+- **`GET /api/wellness/employees/:id/profile?from=&to=`** — optional `YYYY-MM-DD` bounds, default
+  the last 30 days (inclusive of today). `200`: `{ id, name, departmentId, range: { from, to },
+  stats: { avgStressLevel, avgSleepHours, avgEnergyScore, entryCount } }`; each `avg*` is `null`
+  (not `0`) when `entryCount` is `0`. `400`: `{ errors }` for a malformed date; `403`/`404` per the
+  department-scope middleware above.
+- **`GET /api/wellness/employees/:id/trend?metric=stress|sleep|energy&range=30d|90d`** — `200`:
+  `{ data: [{ date, value }, ...] }`, oldest first. Because `wellness_entries` already enforces one
+  row per user per day, one point per existing entry in range is already the fully pre-aggregated
+  series — the chart layer never receives more raw rows than points it will plot. `400`: `{ errors:
+  { metric?, range? } }` for an invalid value.
+
 ## 4. Data Models (cumulative)
 
 ### `roles` table — introduced in S2 (Backend), Prisma model `Role`
@@ -222,6 +252,21 @@ model `WellnessEntry`
 | `energyLevel` | enum `EnergyLevel` (column `energy_level`) | `VERY_LOW\|LOW\|MEDIUM\|HIGH\|VERY_HIGH` |
 | `createdAt`   | `DateTime`, default now (column `created_at`) |                                    |
 | `updatedAt`   | `DateTime`, auto-updated (column `updated_at`) |                                   |
+
+### `WellnessHistory` / `EmployeeProfile` — introduced in S4 (Backend), read-model shapes, not
+new tables
+S4's technical plan specified these as `id`/`userId`/`entryDate`/`mood`/`stressLevel`/
+`sleepHours`/`energyScore` (`WellnessHistory`) and `id`/`name`/`departmentId` (`EmployeeProfile`).
+Every one of those fields already exists on the `users` and `wellness_entries` tables above (S2/S3),
+so they are implemented as **response shapes computed by the S4 controllers at request time** —
+`wellnessHistoryController.serializeHistoryRow` and the `employeeProfileController.getProfile`
+response body — joining `wellness_entries` to `users`, not as separate Prisma models/migrations.
+Persisting a second, physically duplicated copy of the same per-entry data would create two sources
+of truth for `mood`/`stressLevel`/`sleepHours` per entry with no way to guarantee they stay in sync,
+and would bypass the `UNIQUE(user_id, entry_date)` constraint that is the actual system of record.
+`energyScore` is a numeric mapping of the `EnergyLevel` enum (`utils/wellnessMetrics.js`:
+`VERY_LOW=1, LOW=2, MEDIUM=3, HIGH=4, VERY_HIGH=5`), since the story calls for a numeric score but
+`wellness_entries.energyLevel` is intentionally an enum (S3), not a raw number.
 
 ## 5. Change Log (per story, per layer)
 
@@ -566,3 +611,42 @@ live test, closing a gap where only 401/422/200/history were exercised. `npx vit
    dropping any endpoint, screen, or fix detail.
 `npx vitest run`: 59/59 frontend tests pass (58 prior + 1 new ordering test); `python ci_check.py`:
 29 backend + 59 frontend tests, all green.
+
+### Story S4
+**Backend (iteration 1):** Added the manager/admin wellness reporting surface (see API Contract
+3c): `GET /api/wellness/history`, `GET /api/wellness/employees/:id/profile`, and
+`GET /api/wellness/employees/:id/trend`, all `requireRole(["ADMIN", "MANAGER"])`. No new tables —
+`WellnessHistory`/`EmployeeProfile` are documented in Data Models as read-model response shapes
+computed from the existing `wellness_entries`/`users` tables (S2/S3), not duplicate storage.
+
+- `src/middleware/enforceEmployeeDepartmentScope.js`: loads the `:id` route param as
+  `req.targetEmployee`, `404`s if absent, and `403`s a `MANAGER` whose `departmentId` doesn't match
+  — mounted on both `:id` routes in `wellnessRoutes.js`, running *after* `requireRole`.
+- `src/controllers/wellnessHistoryController.js` (`getHistory`): for a `MANAGER`, `departmentId` is
+  always taken from `req.user.departmentId` — a client-supplied `department` query value is read
+  only for `ADMIN`. Builds an `allowedUserIds` set from that department scope, intersects it with an
+  explicit `userId` filter if present (returning an empty page rather than an error when the two
+  don't overlap, so a manager can never probe another department's data by userId), then filters/
+  sorts/paginates `wellness_entries` and resolves `employeeName`/`departmentId` per row via `users`.
+- `src/controllers/employeeProfileController.js` (`getProfile`, `getTrend`): both read
+  `req.targetEmployee` from the scope middleware; `getProfile` averages `stressLevel`/`sleepHours`/
+  a numeric `energyScore` over the requested (default last-30-days) window, `null` when
+  `entryCount` is `0`; `getTrend` returns `{date, value}` points oldest-first for the requested
+  metric/range — one point per entry, already pre-aggregated because of the existing
+  `UNIQUE(user_id, entry_date)` constraint (no multi-entry-per-day bucketing needed).
+- `src/utils/wellnessMetrics.js`: shared `ENERGY_LEVEL_SCORE` enum→number map and an `average()`
+  helper (rounds to 2dp, `null` on empty input) used by both new controllers.
+- `src/utils/validators.js`: added `validateWellnessHistoryQuery` and `validateTrendQuery`
+  (field-level `400 { errors }`, matching the existing `validateDateRangeQuery` contract).
+- Extended `tests/helpers/fakePrisma.js`'s `wellnessEntry.findMany` to support a generic
+  `orderBy`/`skip`/`take` (any field, not just `entryDate`) and added `wellnessEntry.count`, needed
+  for the history grid's column-sort toggle and pagination total.
+- `tests/wellnessHistory.test.js` (8 tests) and `tests/employeeProfile.test.js` (8 tests): real
+  HTTP requests via supertest against the real Express app + fake Prisma (no live Postgres in this
+  environment, same constraint as S2/S3), covering 401/403/404, the manager department-scope
+  boundary on all three routes (including the "requested department/userId outside scope → empty
+  result, not another department's data" case), mood filtering, sortBy/sortOrder, and the
+  profile/trend numeric aggregation.
+
+`node --test` in `backend/`: 47/47 passing (31 prior + 16 new). `python ci_check.py`: 47 backend +
+107 frontend tests, all green.
