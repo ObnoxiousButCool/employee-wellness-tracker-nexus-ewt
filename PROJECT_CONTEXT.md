@@ -39,19 +39,30 @@ frontend/
     login/page.js                   # renders <LoginForm>
     admin/dashboard/page.js         # RoleGuard-wrapped ADMIN landing page
     manager/dashboard/page.js       # RoleGuard-wrapped MANAGER landing page
-    employee/home/page.js           # RoleGuard-wrapped EMPLOYEE landing page
+    employee/home/page.js           # RoleGuard-wrapped EMPLOYEE landing page, links to wellness screens
+    employee/wellness/page.jsx      # RoleGuard-wrapped daily check-in screen, S3
+    employee/wellness/history/page.jsx # RoleGuard-wrapped history screen, S3
     api/auth/login/route.js         # BFF proxy -> backend, forwards ewt_token, sets ewt_session
     api/auth/logout/route.js        # BFF proxy -> backend, clears both cookies
+    api/wellness/entries/route.js   # BFF proxy -> backend POST /api/wellness/entries, S3
+    api/wellness/entries/me/route.js # BFF proxy -> backend GET /api/wellness/entries/me, S3
   components/
     LoginForm.jsx                   # client: email/password form, loading/error states
     RoleGuard.jsx                   # server: redirects to /login on missing/wrong-role session
     LogoutButton.jsx                # client: calls /api/auth/logout, redirects to /login
+    wellness/WellnessEntryForm.jsx  # client: daily check-in form, loading/error/empty states, S3
+    wellness/WellnessHistory.jsx    # client: history table, loading/error/empty states, S3
   lib/
     roles.js                        # ROLES, ROLE_LANDING_PATHS, getLandingPathForRole, resolveAccess
     session.js                      # parseSessionToken (verifies ewt_token JWT), getSession
+    backendProxy.js                 # proxyToBackend() shared by BFF routes, S3
+    wellnessApi.js                  # client fetch wrappers for /api/wellness/*, S3
+    wellnessOptions.js              # fixed MOOD_OPTIONS/ENERGY_LEVEL_OPTIONS lists, S3
   __tests__/
     roles.test.js, session.test.js, RoleGuard.test.jsx, authRoutes.test.js, LoginForm.test.jsx
     liveIntegration.test.js         # real-socket integration test, see Change Log iteration 3
+    wellnessApi.test.js, wellnessRoutes.test.js, WellnessEntryForm.test.jsx,
+    WellnessHistory.test.jsx, wellnessLiveIntegration.test.js  # S3
 ```
 
 ## 3. API Contract (cumulative)
@@ -400,3 +411,51 @@ support, `upsert` on the composite `userId_entryDate` key) exercised by the real
 403 non-today rejection, per-user history scoping/ordering, 400 on a bad date range), wired into
 the existing `node --test` run. `npm test` in `backend/`: 29/29 passing (20 prior + 9 new).
 `python ci_check.py`: 29 backend + 32 frontend tests, all green.
+
+**Frontend (iteration 1):** Added `/employee/wellness` (`WellnessEntryForm.jsx`) and
+`/employee/wellness/history` (`WellnessHistory.jsx`) under `frontend/app/employee/`, both
+`RoleGuard`-wrapped to `EMPLOYEE` and linked from `/employee/home`. Added two Next.js BFF proxy
+routes under `frontend/app/api/wellness/` (`entries`, `entries/me`) that forward the `ewt_token`
+cookie and relay the backend's status/body unchanged, reusing the S1/S2 proxy pattern via a new
+shared `frontend/lib/backendProxy.js` (`proxyToBackend`, generalized out of the auth-route-specific
+relay logic so the wellness routes don't duplicate it), plus `frontend/lib/wellnessApi.js` for the
+client-side fetch wrappers. Consumes both S3 API Contract endpoints:
+`POST /api/wellness/entries` and `GET /api/wellness/entries/me?from=&to=`. `WellnessEntryForm`
+renders `stressLevel`/`workHours`/`sleepHours` as numeric inputs and `mood`/`energyLevel` as fixed
+radio groups (`frontend/lib/wellnessOptions.js`, mirroring the backend's `Mood`/`EnergyLevel`
+enums exactly — never free text); it never sends `entryDate`, so every submission targets today by
+construction and the backend's 403 edit-window rejection is structurally unreachable from this UI.
+On mount it loads today's entry via `GET /api/wellness/entries/me?from=<today>&to=<today>` to
+prefill the form for in-place editing when one exists, or render an explicit "no entry yet today"
+empty state when it doesn't — giving the submission screen a real loading/error/empty state, not
+just the create form. Submission errors are split by shape: a `422` body's `errors.<field>` is
+shown inline next to that field (no generic banner), while any other failure (401/502/network) shows
+a single alert banner. `WellnessHistory` lists the full unfiltered history returned by
+`GET /api/wellness/entries/me`, rendered in the order the backend returns it (newest first, not
+re-sorted client-side), with its own loading/error(+Retry)/empty states.
+
+*Verified end-to-end* (`frontend/__tests__/wellnessLiveIntegration.test.js`, 5 tests): the real
+backend Express app (`backend/src/app.js` via `createApp`, imported directly — no
+reimplementation) is started on a real ephemeral localhost port, wired to
+`backend/tests/helpers/fakePrisma.js` (no live Postgres in this environment, same constraint every
+prior story hit). The frontend's actual `/api/wellness/*` route handlers are driven against it
+over a real TCP socket with a real signed `ewt_token` cookie — no mocked `fetch` — exercising: a
+real `401` from `authenticate` on both routes with no cookie; creating today's entry for real and
+confirming a same-day resubmission upserts in place (same `id`, updated field values) rather than
+creating a second row; a real `422` with `errors.workHours` for the workHours+sleepHours>24
+cross-field rule; and history scoping — two different users each create an entry, and one user's
+`GET /api/wellness/entries/me` is confirmed to return only their own row. No contract mismatches
+were found; live backend behavior matched the documented API Contract exactly on every field name,
+status code, and error shape. Additionally added `wellnessApi.test.js` (5 tests, pure fetch-wrapper
+unit tests), `wellnessRoutes.test.js` (5 tests, BFF proxy relay behavior with mocked `fetch`,
+including the 502-on-unreachable-backend path), and `WellnessEntryForm.test.jsx`/
+`WellnessHistory.test.jsx` (7 + 3 tests, RTL, covering the loading/error/empty/prefill states, the
+field-level-vs-banner error split, and history ordering as returned by the backend). `npx vitest
+run`: 57/57 frontend tests pass (32 prior + 25 new); `python ci_check.py`: 29 backend + 57 frontend
+tests, all green.
+
+*Note on branch base:* this iteration was built on `story-s3-frontend`, cut from `story-s3-backend`
+(which has the S3 backend committed). The S2 admin frontend screens described in this file's S2
+Frontend Change Log entry are not present on this branch's working tree (they live on the
+unmerged `story-s2-frontend` branch) — this iteration did not touch or depend on that work, only
+on the S1 auth scaffolding and the S3 backend, both of which are present here.
