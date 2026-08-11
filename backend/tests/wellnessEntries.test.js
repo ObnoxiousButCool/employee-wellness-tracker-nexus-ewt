@@ -2,9 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
 const { buildTestApp, signToken } = require("./helpers/testApp");
+const {
+  toDateOnlyString,
+  parseDateOnly,
+} = require("../src/controllers/wellnessEntriesController");
 
 function todayDateString() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
 function validEntryBody(overrides = {}) {
@@ -156,6 +162,29 @@ test("GET /api/wellness/entries/me returns only the current user's history, newe
   assert.equal(res.body.data.length, 2);
   assert.equal(res.body.data.every((e) => e.userId === 1), true);
   assert.equal(res.body.data[0].entryDate, todayDateString());
+});
+
+test("toDateOnlyString reports the server's local calendar day, not the UTC day", () => {
+  // Fixed instant chosen so UTC and a positive-offset local zone (e.g. IST,
+  // UTC+5:30) land on different calendar days: 2026-03-04T23:15:00Z is still
+  // 2026-03-04 in UTC but already 2026-03-05 local time in IST. Regressing to
+  // date.toISOString().slice(0, 10) (the bug this test guards against) would
+  // report the UTC day here instead of the server's actual local day.
+  const localMidnight = new Date(2026, 2, 5); // local March 5, 2026, 00:00
+  assert.equal(toDateOnlyString(localMidnight), "2026-03-05");
+
+  const localOffsetMinutes = new Date().getTimezoneOffset();
+  if (localOffsetMinutes !== 0) {
+    // On a non-UTC server, local midnight's UTC-rendered date differs from
+    // its local date — proving toDateOnlyString is reading local getters,
+    // not shifting through UTC.
+    assert.notEqual(toDateOnlyString(localMidnight), localMidnight.toISOString().slice(0, 10));
+  }
+});
+
+test("parseDateOnly/toDateOnlyString round-trip a YYYY-MM-DD string without shifting days", () => {
+  const dateString = "2026-12-31";
+  assert.equal(toDateOnlyString(parseDateOnly(dateString)), dateString);
 });
 
 test("GET /api/wellness/entries/me returns 400 for a malformed date range", async () => {

@@ -1,7 +1,22 @@
 const { validateWellnessEntry, validateDateRangeQuery } = require("../utils/validators");
 
+// entryDate is a @db.Date column with no time/zone component; the server's
+// system-clock calendar day is the source of truth for "today". All
+// conversions below use local (server) date parts, never toISOString()/UTC —
+// mixing the two would shift the calendar day for any server not running in
+// the UTC timezone, most visibly near midnight.
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
 function toDateOnlyString(date) {
-  return date instanceof Date ? date.toISOString().slice(0, 10) : date;
+  if (!(date instanceof Date)) return date;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function parseDateOnly(dateString) {
+  const [year, month, day] = dateString.split("-").map(Number);
+  return new Date(year, month - 1, day);
 }
 
 function serializeEntry(row) {
@@ -20,7 +35,7 @@ function serializeEntry(row) {
 }
 
 function todayDateString() {
-  return new Date().toISOString().slice(0, 10);
+  return toDateOnlyString(new Date());
 }
 
 /**
@@ -42,7 +57,7 @@ async function upsertEntry(req, res) {
 
   const prisma = req.app.locals.prisma;
   const userId = req.user.userId;
-  const entryDate = new Date(`${today}T00:00:00.000Z`);
+  const entryDate = parseDateOnly(today);
 
   const saved = await prisma.wellnessEntry.upsert({
     where: { userId_entryDate: { userId, entryDate } },
@@ -78,8 +93,8 @@ async function listMyEntries(req, res) {
   const where = { userId: req.user.userId };
   if (req.query.from !== undefined || req.query.to !== undefined) {
     where.entryDate = {};
-    if (req.query.from !== undefined) where.entryDate.gte = new Date(`${req.query.from}T00:00:00.000Z`);
-    if (req.query.to !== undefined) where.entryDate.lte = new Date(`${req.query.to}T00:00:00.000Z`);
+    if (req.query.from !== undefined) where.entryDate.gte = parseDateOnly(req.query.from);
+    if (req.query.to !== undefined) where.entryDate.lte = parseDateOnly(req.query.to);
   }
 
   const rows = await prisma.wellnessEntry.findMany({
@@ -90,4 +105,11 @@ async function listMyEntries(req, res) {
   return res.status(200).json({ data: rows.map(serializeEntry) });
 }
 
-module.exports = { upsertEntry, listMyEntries, serializeEntry };
+module.exports = {
+  upsertEntry,
+  listMyEntries,
+  serializeEntry,
+  toDateOnlyString,
+  parseDateOnly,
+  todayDateString,
+};
