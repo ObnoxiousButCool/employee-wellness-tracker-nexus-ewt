@@ -39,6 +39,19 @@ function matchesWhere(row, where, tables) {
   });
 }
 
+/** Generic ascending comparator used by wellnessEntry.findMany's orderBy. */
+function compareValues(a, b) {
+  if (a instanceof Date || b instanceof Date) {
+    const at = a instanceof Date ? a.getTime() : a;
+    const bt = b instanceof Date ? b.getTime() : b;
+    return at - bt;
+  }
+  const an = Number(a);
+  const bn = Number(b);
+  if (!Number.isNaN(an) && !Number.isNaN(bn)) return an - bn;
+  return String(a).localeCompare(String(b));
+}
+
 function createFakePrisma({ roles = [], departments = [], users = [], wellnessEntries = [] } = {}) {
   const state = {
     roles: roles.map((r) => ({ ...r })),
@@ -183,14 +196,21 @@ function createFakePrisma({ roles = [], departments = [], users = [], wellnessEn
       },
     },
     wellnessEntry: {
-      async findMany({ where = {}, orderBy } = {}) {
+      async findMany({ where = {}, orderBy, skip = 0, take } = {}) {
         let rows = state.wellnessEntries.filter((w) => matchesWhere(w, where));
-        if (orderBy?.entryDate === "desc") {
-          rows = [...rows].sort((a, b) => b.entryDate.getTime() - a.entryDate.getTime());
-        } else if (orderBy?.entryDate === "asc") {
-          rows = [...rows].sort((a, b) => a.entryDate.getTime() - b.entryDate.getTime());
+        if (orderBy) {
+          const [field] = Object.keys(orderBy);
+          const dir = orderBy[field];
+          rows = [...rows].sort((a, b) => {
+            const cmp = compareValues(a[field], b[field]);
+            return dir === "asc" ? cmp : -cmp;
+          });
         }
+        rows = rows.slice(skip, take !== undefined ? skip + take : undefined);
         return rows.map((row) => ({ ...row }));
+      },
+      async count({ where = {} } = {}) {
+        return state.wellnessEntries.filter((w) => matchesWhere(w, where)).length;
       },
       async upsert({ where, create, update }) {
         const { userId, entryDate } = where.userId_entryDate;

@@ -16,6 +16,17 @@ function isNumberInRange(value, min, max) {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
+const POSITIVE_INTEGER_RE = /^\d+$/;
+
+/**
+ * Strictly validates that a raw query/path string is an exact positive
+ * integer — unlike Number.parseInt, which stops at the first non-digit
+ * character and silently accepts "12abc" as 12.
+ */
+function isPositiveIntegerString(value) {
+  return typeof value === "string" && POSITIVE_INTEGER_RE.test(value.trim());
+}
+
 /**
  * Validates the body of POST /api/admin/users.
  * Returns a list of human-readable field errors; empty list means valid.
@@ -155,6 +166,53 @@ function validateDateRangeQuery(query) {
   return errors;
 }
 
+const HISTORY_SORTABLE_FIELDS = ["entryDate", "stressLevel", "sleepHours"];
+const TREND_METRICS = ["stress", "sleep", "energy"];
+const TREND_RANGES = ["30d", "90d"];
+
+/**
+ * Validates the query of GET /api/wellness/history. userId/department are
+ * validated as well-formed integers here only; scope enforcement (a manager
+ * never seeing another department) happens in the controller, not here.
+ */
+function validateWellnessHistoryQuery(query) {
+  const errors = {};
+  if (query.from !== undefined && (typeof query.from !== "string" || !DATE_RE.test(query.from))) {
+    errors.from = "from must be a valid date in YYYY-MM-DD format";
+  }
+  if (query.to !== undefined && (typeof query.to !== "string" || !DATE_RE.test(query.to))) {
+    errors.to = "to must be a valid date in YYYY-MM-DD format";
+  }
+  if (query.mood !== undefined && !MOOD_VALUES.includes(query.mood)) {
+    errors.mood = `mood must be one of: ${MOOD_VALUES.join(", ")}`;
+  }
+  if (query.userId !== undefined && !isPositiveIntegerString(query.userId)) {
+    errors.userId = "userId must be an integer";
+  }
+  if (query.department !== undefined && !isPositiveIntegerString(query.department)) {
+    errors.department = "department must be an integer";
+  }
+  if (query.sortBy !== undefined && !HISTORY_SORTABLE_FIELDS.includes(query.sortBy)) {
+    errors.sortBy = `sortBy must be one of: ${HISTORY_SORTABLE_FIELDS.join(", ")}`;
+  }
+  if (query.sortOrder !== undefined && !["asc", "desc"].includes(query.sortOrder)) {
+    errors.sortOrder = "sortOrder must be one of: asc, desc";
+  }
+  return errors;
+}
+
+/** Validates the query of GET /api/wellness/employees/:id/trend. */
+function validateTrendQuery(query) {
+  const errors = {};
+  if (!TREND_METRICS.includes(query.metric)) {
+    errors.metric = `metric must be one of: ${TREND_METRICS.join(", ")}`;
+  }
+  if (!TREND_RANGES.includes(query.range)) {
+    errors.range = `range must be one of: ${TREND_RANGES.join(", ")}`;
+  }
+  return errors;
+}
+
 module.exports = {
   validateCreateUser,
   validateUpdateUser,
@@ -163,7 +221,13 @@ module.exports = {
   validateUpdateDepartment,
   validateWellnessEntry,
   validateDateRangeQuery,
+  validateWellnessHistoryQuery,
+  validateTrendQuery,
+  isPositiveIntegerString,
   MOOD_VALUES,
   ENERGY_LEVEL_VALUES,
+  HISTORY_SORTABLE_FIELDS,
+  TREND_METRICS,
+  TREND_RANGES,
   DATE_RE,
 };
