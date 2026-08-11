@@ -23,18 +23,32 @@ function matchesWhere(row, where, tables) {
     if (condition && typeof condition === "object" && "in" in condition) {
       return condition.in.includes(value);
     }
+    if (condition && typeof condition === "object" && ("gte" in condition || "lte" in condition)) {
+      const numeric = value instanceof Date ? value.getTime() : value;
+      if ("gte" in condition) {
+        const bound = condition.gte instanceof Date ? condition.gte.getTime() : condition.gte;
+        if (numeric < bound) return false;
+      }
+      if ("lte" in condition) {
+        const bound = condition.lte instanceof Date ? condition.lte.getTime() : condition.lte;
+        if (numeric > bound) return false;
+      }
+      return true;
+    }
     return value === condition;
   });
 }
 
-function createFakePrisma({ roles = [], departments = [], users = [] } = {}) {
+function createFakePrisma({ roles = [], departments = [], users = [], wellnessEntries = [] } = {}) {
   const state = {
     roles: roles.map((r) => ({ ...r })),
     departments: departments.map((d) => ({ ...d })),
     users: users.map((u) => ({ ...u })),
+    wellnessEntries: wellnessEntries.map((w) => ({ ...w })),
   };
   let nextUserId = state.users.reduce((max, u) => Math.max(max, u.id), 0) + 1;
   let nextDeptId = state.departments.reduce((max, d) => Math.max(max, d.id), 0) + 1;
+  let nextEntryId = state.wellnessEntries.reduce((max, w) => Math.max(max, w.id), 0) + 1;
 
   function hydrateUser(row) {
     return {
@@ -166,6 +180,36 @@ function createFakePrisma({ roles = [], departments = [], users = [] } = {}) {
         let rows = state.roles.map((r) => ({ ...r }));
         if (orderBy?.id === "asc") rows = rows.sort((a, b) => a.id - b.id);
         return rows;
+      },
+    },
+    wellnessEntry: {
+      async findMany({ where = {}, orderBy } = {}) {
+        let rows = state.wellnessEntries.filter((w) => matchesWhere(w, where));
+        if (orderBy?.entryDate === "desc") {
+          rows = [...rows].sort((a, b) => b.entryDate.getTime() - a.entryDate.getTime());
+        } else if (orderBy?.entryDate === "asc") {
+          rows = [...rows].sort((a, b) => a.entryDate.getTime() - b.entryDate.getTime());
+        }
+        return rows.map((row) => ({ ...row }));
+      },
+      async upsert({ where, create, update }) {
+        const { userId, entryDate } = where.userId_entryDate;
+        const row = state.wellnessEntries.find(
+          (w) => w.userId === userId && w.entryDate.getTime() === entryDate.getTime()
+        );
+        const now = new Date();
+        if (row) {
+          Object.assign(row, update, { updatedAt: now });
+          return { ...row };
+        }
+        const created = {
+          id: nextEntryId++,
+          createdAt: now,
+          updatedAt: now,
+          ...create,
+        };
+        state.wellnessEntries.push(created);
+        return { ...created };
       },
     },
     _state: state,

@@ -144,6 +144,26 @@ All routes below are mounted under `/api/admin` and require `authenticate` + `re
 > routes work, but `POST /api/auth/login`/`logout` remain missing — a future iteration must add
 > them before the frontend login flow is reachable end-to-end.
 
+## 3b. Wellness entry endpoints — introduced in S3 (Backend)
+Both routes are mounted under `/api/wellness` and require only `authenticate` (any authenticated
+role logs/reads their own entries — no `requireRole` restriction).
+
+- **`POST /api/wellness/entries`** — body: `{ stressLevel: 1-10 (int), workHours: 0-24, sleepHours:
+  0-24, mood, energyLevel, entryDate? (YYYY-MM-DD, optional) }`. `mood` ∈ `VERY_LOW|LOW|NEUTRAL|
+  GOOD|GREAT`, `energyLevel` ∈ `VERY_LOW|LOW|MEDIUM|HIGH|VERY_HIGH`. Always upserts the current
+  user's row for the server's current calendar day (`UNIQUE(user_id, entry_date)`), so a same-day
+  resubmission edits in place rather than erroring. `200`: the saved entry. `422`:
+  `{ errors: { <field>: message } }` for out-of-range `stressLevel`/`workHours`/`sleepHours`, an
+  invalid `mood`/`energyLevel`, a malformed `entryDate`, or `workHours + sleepHours > 24` (reported
+  under `errors.workHours`). `403`: `{ error }` if `entryDate` is supplied and does not equal
+  today — an entry is only ever editable on the calendar day it belongs to, enforced here (not just
+  hidden in the UI).
+- **`GET /api/wellness/entries/me?from=&to=`** — optional `YYYY-MM-DD` bounds (inclusive) on
+  `entryDate`. `200`: `{ data: [entry, ...] }`, the current user's own history only, newest
+  `entryDate` first. `400`: `{ errors: { from|to: message } }` for a malformed date.
+- Entry shape: `{ id, userId, entryDate, stressLevel, workHours, sleepHours, mood, energyLevel,
+  createdAt, updatedAt }`.
+
 ## 4. Data Models (cumulative)
 
 ### `roles` table — introduced in S2 (Backend), Prisma model `Role`
@@ -178,12 +198,20 @@ in S2 fix iteration 3 (migration `20260811090000_add_users_department_status_ind
 `department`+`status` filter combination `GET /api/admin/users` supports, avoiding a full table
 scan as the table grows.
 
-### `wellness_entries` table — introduced in S2 (Backend), Prisma model `WellnessEntry`
-| Field        | Type                              | Notes                                   |
-|--------------|-------------------------------------|------------------------------------------|
-| `id`         | `Int` (PK, autoincrement)          |                                          |
-| `userId`     | `Int` (column `user_id`)           | FK → `users.id`, `ON DELETE RESTRICT`    |
-| `entryDate`  | `Date` (column `entry_date`)       | foundation only; future stories add fields |
+### `wellness_entries` table — foundation introduced in S2, fields added in S3 (Backend), Prisma
+model `WellnessEntry`
+| Field         | Type                                  | Notes                                   |
+|---------------|-----------------------------------------|------------------------------------------|
+| `id`          | `Int` (PK, autoincrement)              |                                          |
+| `userId`      | `Int` (column `user_id`)               | FK → `users.id`, `ON DELETE RESTRICT`    |
+| `entryDate`   | `Date` (column `entry_date`)           | `UNIQUE(user_id, entry_date)` — one entry per user per day |
+| `stressLevel` | `Int` (column `stress_level`)          | 1-10, enforced at the API layer (422)    |
+| `workHours`   | `Decimal(4,2)` (column `work_hours`)   | 0-24; `workHours + sleepHours <= 24` cross-field rule |
+| `sleepHours`  | `Decimal(4,2)` (column `sleep_hours`)  | 0-24                                     |
+| `mood`        | enum `Mood`                            | `VERY_LOW\|LOW\|NEUTRAL\|GOOD\|GREAT`      |
+| `energyLevel` | enum `EnergyLevel` (column `energy_level`) | `VERY_LOW\|LOW\|MEDIUM\|HIGH\|VERY_HIGH` |
+| `createdAt`   | `DateTime`, default now (column `created_at`) |                                    |
+| `updatedAt`   | `DateTime`, auto-updated (column `updated_at`) |                                   |
 
 ## 5. Change Log (per story, per layer)
 
@@ -450,3 +478,37 @@ loading/error/empty states): all are covered by the existing `UserManagement.tes
 
 `npx vitest run`: 75 passed, 5 skipped (80 total, backend-materialized run: 80/80 passed).
 `python ci_check.py`: all green.
+
+### Story S3
+**Backend (iteration 1):** Added the daily wellness check-in fields to `wellness_entries` (created
+empty in S2 as a placeholder) via migration `20260812100000_add_wellness_entry_fields`:
+`stress_level`, `work_hours`/`sleep_hours` (`Decimal(4,2)`), `mood`/`energy_level` (new Postgres
+enums), `created_at`, `updated_at`, plus `UNIQUE(user_id, entry_date)` (see Data Models).
+Implemented `POST /api/wellness/entries` (`src/controllers/wellnessEntriesController.js`), always
+upserting the current user's row for today so a same-day resubmission edits in place; a request
+naming a different `entryDate` is rejected `403`. Field-level `422` validation
+(`validateWellnessEntry` in `utils/validators.js`), including the `workHours + sleepHours <= 24`
+cross-field rule under `errors.workHours`. Added `GET /api/wellness/entries/me?from=&to=`, caller's
+own history only, newest first, `400` on a malformed date bound. Both routes mounted under
+`/api/wellness` behind `authenticate` only (every role logs their own entries). No live Postgres in
+this environment, so `tests/helpers/fakePrisma.js` gained a `wellnessEntry` model exercised via the
+real Express app (`testApp.js`). `tests/wellnessEntries.test.js` (9 tests). `npm test`: 29/29
+passing. `python ci_check.py`: 29 backend + 32 frontend tests, all green.
+
+**Fixes (iteration 3) — backend:** Addressed both review findings.
+1. *Calendar-day correctness.* `todayDateString()`/`toDateOnlyString()` derived "today" and
+   serialized `entryDate` via `new Date().toISOString().slice(0, 10)` — a UTC day, not the server's
+   actual (local) calendar day. On any server not running in UTC, requests near local midnight could
+   read/write the wrong day (e.g. server local time already past midnight but UTC still on the prior
+   day, or vice versa), corrupting the "one entry per user per day" and 403 edit-window guarantees
+   the story requires. Rewrote both helpers, plus the new `parseDateOnly()`, to build/read dates from
+   local (`getFullYear`/`getMonth`/`getDate`) parts exclusively — `entryDate` is a `@db.Date` column
+   with no time/zone component, so the server's system-clock day is the sole source of truth, never
+   UTC. Added `tests/wellnessEntries.test.js` coverage: a direct unit test proving
+   `toDateOnlyString`/`parseDateOnly` read/round-trip local date parts (and diverge from
+   `toISOString()` on any non-UTC test host), plus updated the existing tests' own `todayDateString()`
+   helper to compute local date the same way so they stay correct on any host.
+2. *`PROJECT_CONTEXT.md` line budget.* Condensed the S3 Backend Change Log entry (this section)
+   without dropping any endpoint, schema, or fix detail.
+`node --test` in `backend/`: 31/31 passing (29 prior + 2 new). `python ci_check.py`: 31 backend +
+32 frontend tests, all green.

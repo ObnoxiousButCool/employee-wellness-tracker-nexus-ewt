@@ -45,11 +45,35 @@ model User {
   @@map("users")
 }
 
-model WellnessEntry {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  entryDate DateTime @map("entry_date") @db.Date
+enum Mood {
+  VERY_LOW
+  LOW
+  NEUTRAL
+  GOOD
+  GREAT
+}
 
+enum EnergyLevel {
+  VERY_LOW
+  LOW
+  MEDIUM
+  HIGH
+  VERY_HIGH
+}
+
+model WellnessEntry {
+  id          Int         @id @default(autoincrement())
+  userId      Int         @map("user_id")
+  user        User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  entryDate   DateTime    @map("entry_date") @db.Date
+  stressLevel Int         @map("stress_level")
+  workHours   Decimal     @map("work_hours") @db.Decimal(4, 2)
+  sleepHours  Decimal     @map("sleep_hours") @db.Decimal(4, 2)
+  mood        Mood
+  energyLevel EnergyLevel @map("energy_level")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@unique([userId, entryDate])
   @@map("wellness_entries")
 }
