@@ -4,11 +4,14 @@ const requireRole = require("../middleware/requireRole");
 const asyncHandler = require("../utils/asyncHandler");
 const usersController = require("../controllers/adminUsersController");
 const departmentsController = require("../controllers/adminDepartmentsController");
+const rolesController = require("../controllers/adminRolesController");
 
 const router = express.Router();
 
 // Every /api/admin/* route requires an authenticated ADMIN.
 router.use(authenticate, requireRole(["ADMIN"]));
+
+router.get("/roles", asyncHandler(rolesController.listRoles));
 
 router.get("/users", asyncHandler(usersController.listUsers));
 router.post("/users", asyncHandler(usersController.createUser));

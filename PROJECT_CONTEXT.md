@@ -17,16 +17,18 @@ backend/
   package.json, .env.example
   prisma/schema.prisma
   prisma/migrations/20260810120000_init_roles_departments_users_wellness/migration.sql
+  prisma/migrations/20260811090000_add_users_department_status_index/migration.sql
   src/
     app.js                          # createApp({ prisma }) factory, injectable for tests
     server.js
     config/env.js, config/prisma.js
     middleware/authenticate.js, middleware/requireRole.js
-    controllers/adminUsersController.js, controllers/adminDepartmentsController.js
+    controllers/adminUsersController.js, controllers/adminDepartmentsController.js,
+    controllers/adminRolesController.js
     routes/adminRoutes.js           # mounts /api/admin/* , requires ADMIN
     utils/validators.js, utils/pagination.js, utils/asyncHandler.js
   tests/
-    adminUsers.test.js, adminDepartments.test.js, authMiddleware.test.js
+    adminUsers.test.js, adminDepartments.test.js, adminRoles.test.js, authMiddleware.test.js
     helpers/fakePrisma.js           # in-memory Prisma double, no live DB in this environment
     helpers/testApp.js
 
@@ -93,6 +95,11 @@ backend's `Secure`/`SameSite=Strict` cookie and the frontend's origin are never 
 All routes below are mounted under `/api/admin` and require `authenticate` + `requireRole(["ADMIN"])`
 (`401` if no/invalid session, `403` if the session's role isn't `ADMIN`).
 
+- **`GET /api/admin/roles`** — introduced in S2 fix iteration 3. Read-only lookup of the
+  canonical `roles` table (no filters/pagination). `200`: `{ data: [{ id, name }] }`, ordered by
+  `id`. Lets the frontend populate a complete role picker on a fresh install, even for a role
+  with zero existing users, instead of inferring roles from `GET /api/admin/users` results —
+  closes the "Contract gap" the frontend's S2 iteration-1 Change Log entry documented.
 - **`GET /api/admin/users?search=&department=&status=&page=&pageSize=`** — case-insensitive
   `search` on `name`/`email`; `department` filters by id; `status` is `active`|`inactive`;
   `page`/`pageSize` default `1`/`20`, capped at `100`. `200`: `{ data: [{ id, name, email, roleId,
@@ -148,6 +155,11 @@ that was never committed), Prisma model `User`
 | `isActive`      | `Boolean`, default `true` (column `is_active`) | soft-delete only, via status endpoint |
 | `createdAt`     | `DateTime`, default now (column `created_at`) |                                |
 | `updatedAt`     | `DateTime`, auto-updated (column `updated_at`) |                               |
+
+Composite index `users_department_id_is_active_idx` on `(department_id, is_active)` — introduced
+in S2 fix iteration 3 (migration `20260811090000_add_users_department_status_index`) — covers the
+`department`+`status` filter combination `GET /api/admin/users` supports, avoiding a full table
+scan as the table grows.
 
 ### `wellness_entries` table — introduced in S2 (Backend), Prisma model `WellnessEntry`
 | Field        | Type                              | Notes                                   |
@@ -259,6 +271,26 @@ passed (18 backend + 32 frontend tests).
 `backend/tests/adminDepartments.test.js`'s existing "lists departments with active user counts"
 test exercises the new `groupBy` path unchanged. `npm test` (18/18) and `python ci_check.py`
 (18 backend + 72 frontend) both pass.
+
+**Fixes (iteration 3) — backend:** Addressed both review findings.
+1. *Missing roles lookup endpoint.* A fresh install with zero users had no way to populate a
+   complete role picker, since roles could previously only be inferred from existing
+   `GET /api/admin/users` rows (see the frontend's iteration-1 "Contract gap" note below). Added
+   `backend/src/controllers/adminRolesController.js` (`listRoles`) and wired
+   `GET /api/admin/roles` into `backend/src/routes/adminRoutes.js`, ADMIN-protected via the same
+   `authenticate`/`requireRole(["ADMIN"])` middleware as the other admin routes; returns
+   `{ data: [{ id, name }] }` ordered by `id`, straight from the canonical `roles` table. Added
+   `backend/tests/adminRoles.test.js` (2 tests: 401 unauthenticated, 200 listing the 3 seeded
+   roles) and extended `backend/tests/helpers/fakePrisma.js`'s `role.findMany` to honor
+   `orderBy: { id: "asc" }`.
+2. *No composite index for the `users` admin path at scale.* `GET /api/admin/users` filters on
+   `department` and `status` together but the table had no supporting index beyond the PK and the
+   `email` unique index, so both filters would force a full scan as `users` grows. Added
+   `@@index([departmentId, isActive])` to the `User` model in `prisma/schema.prisma` and migration
+   `20260811090000_add_users_department_status_index` (`CREATE INDEX
+   users_department_id_is_active_idx ON users(department_id, is_active)`).
+`node --test` in `backend/`: 20/20 passing (18 prior + 2 new). `python ci_check.py`: 20 backend +
+32 frontend tests, all green.
 
 **Frontend (iteration 1):** Added `/admin/users` and `/admin/departments` under `frontend/app/admin/`
 (both `RoleGuard`-wrapped to ADMIN, linked from the admin dashboard), backed by `UserManagement.jsx`

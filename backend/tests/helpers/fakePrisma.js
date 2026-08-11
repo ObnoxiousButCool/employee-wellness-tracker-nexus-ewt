@@ -162,8 +162,10 @@ function createFakePrisma({ roles = [], departments = [], users = [] } = {}) {
       },
     },
     role: {
-      async findMany() {
-        return state.roles.map((r) => ({ ...r }));
+      async findMany({ orderBy } = {}) {
+        let rows = state.roles.map((r) => ({ ...r }));
+        if (orderBy?.id === "asc") rows = rows.sort((a, b) => a.id - b.id);
+        return rows;
       },
     },
     _state: state,
