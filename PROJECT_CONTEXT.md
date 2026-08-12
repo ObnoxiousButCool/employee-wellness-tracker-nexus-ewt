@@ -1344,3 +1344,107 @@ skipped are exactly this suite's two files, skipping via the new guard rather th
 `python ci_check.py`: passes clean (previously would have failed with 8 failures before this fix,
 reproduced above). Against the real S6 backend (temporarily materialized, not committed): 194/194,
 0 skipped, 0 failed.
+
+### Story S7
+**Backend (iteration 1):** Cross-cutting security/performance audit pass over the existing
+`GET /api/dashboard/summary` (S5) and `GET /api/wellness/history` (S4) reporting surface — this
+story's technical requirements deliberately scope it as "a cross-cutting audit pass, not a
+standalone feature with its own new endpoints," so no new route was added. Systematically
+re-verified every requirement in the technical plan against the code already on this branch
+(built up over S2-S6):
+
+- **Indexed columns.** `wellness_entries(user_id, entry_date)` and `users(department_id,
+  is_active)` were both already indexed (S3's `UNIQUE(user_id, entry_date)` constraint and S2 fix
+  iteration 3's `users_department_id_is_active_idx`, respectively) — confirmed both are real,
+  already-applied composite indexes, not just Prisma-schema declarations with no corresponding
+  migration, by reading the migration SQL directly. Added `backend/tests/schemaIndexAudit.test.js`
+  (4 tests) as a permanent regression check — asserting the index/constraint annotations are
+  present in `prisma/schema.prisma` *and* the matching `CREATE INDEX`/`CREATE UNIQUE INDEX`
+  statements are present in the applied migration SQL — so a future schema edit can't silently drop
+  either index without failing CI. Added short audit comments to `prisma/schema.prisma` on both
+  annotations recording which S7 requirement each satisfies.
+- **Server-side aggregation.** Re-read `dashboardController.js`/`dashboardMetrics.js` and
+  `wellnessHistoryController.js` line by line: every KPI/status/trend/ranking computation and the
+  history grid's filtering/sorting/pagination is done via Prisma `where`/`orderBy`/`skip`/`take`/
+  `count` against the two indexed columns above, never by fetching an unfiltered table into memory
+  and reducing client-side (JS) — this was already true as of S4/S5's original implementation and
+  S5 fix iteration 2's tie-break ordering fix; no change was needed.
+- **Authorization re-validation.** Confirmed every route under `/api/dashboard` and
+  `/api/wellness/history` (plus the two `:id` employee routes) runs `authenticate` (re-verifies the
+  JWT and re-derives `req.user` from its signed claims on every request, never trusting a cached or
+  client-supplied role/department) followed by `requireRole(["ADMIN", "MANAGER"])`, and that a
+  `MANAGER`'s scope is forced server-side in the controller itself (`dashboardController.getSummary`,
+  `wellnessHistoryController.getHistory`) rather than only filtered in the frontend — already true
+  since S4/S5, re-confirmed by reading `routes/dashboardRoutes.js`/`routes/wellnessRoutes.js` and
+  both controllers.
+- **Data protection.** Confirmed `passwordHash` is bcrypt-only (cost 10, `adminUsersController.js`)
+  and never appears in any response — every user-serializing function (`serializeUser`,
+  `serializeHistoryRow`, the dashboard/scoring builders) explicitly picks its output fields rather
+  than spreading a raw Prisma row — and that no controller `console.log`s a request body, token, or
+  full user/entry record (`grep`'d every file under `backend/src/controllers`). JWT verification
+  (`middleware/authenticate.js`) already fails startup if `JWT_SECRET` is unset (S2 fix iteration 2)
+  rather than falling back to a forgeable empty secret; HTTPS/cookie-`Secure` enforcement is a
+  deployment/S1-frontend-proxy concern (already documented in API Contract, section 3) and out of
+  this backend layer's scope.
+
+No functional endpoint, controller, or middleware code required a change — the audit found the
+existing implementation already compliant with every S7 requirement. The only substantive edits
+are the new regression test and the two explanatory schema comments above; `PROJECT_CONTEXT.md`
+sections 3f (new) and the `users`/`wellness_entries` Data Models entries were extended per the
+audit findings (this entry).
+
+`node --test` in `backend/`: 94/94 passing (90 prior + 4 new). `python ci_check.py`: 94 backend +
+194 frontend tests, all green (frontend unchanged and untouched by this layer).
+
+**Frontend (iteration 1):** Like the backend layer, this is a cross-cutting audit pass over the
+dashboard views (S5, `DashboardSummary.jsx` and its five child components) and history views (S4,
+`WellnessHistoryGrid.jsx`, `EmployeeProfile.jsx`, `TrendChart.jsx`) that already exist on this
+branch from prior stories — no new screen, component, or BFF route was added, since S7's technical
+requirements scope it as an audit, not a new feature.
+
+Audited every consumer of `GET /api/dashboard/summary` (S5 API Contract 3d) and
+`GET /api/wellness/history` (S4 API Contract 3c) plus their BFF proxies
+(`app/api/dashboard/summary/route.js`, `app/api/wellness/history/route.js`,
+`app/api/wellness/employees/[id]/{profile,trend}/route.js`, all built on the shared
+`lib/backendProxy.js` relay) against this story's technical requirements:
+
+- **No frontend-only authorization.** Confirmed every dashboard/history/employee-profile/
+  wellness-scores page (`app/admin/dashboard`, `app/manager/dashboard`,
+  `app/admin/wellness/history`, `app/manager/wellness/history`,
+  `app/{admin,manager}/employees/[id]`, `app/{admin,manager}/wellness/scores`,
+  `app/manager/department/wellness`, `app/admin/departments/[id]/wellness`) is wrapped in
+  `<RoleGuard allowedRoles={[...]}>`, which only ever *redirects the UI* to `/login` on a missing
+  or wrong-role session — it never substitutes for a server-side check. Re-confirmed the actual
+  authorization boundary is the backend's `authenticate` + `requireRole` + (for the two `:id`
+  routes) `enforceEmployeeDepartmentScope` middleware, exercised for real in this iteration's
+  live-backend test run (below), not assumed from reading the route guard alone.
+- **No client-side scope override.** `DashboardScopeFilter.jsx`/`WellnessHistoryGrid.jsx`'s
+  department filter is rendered for `ADMIN` only and hidden (not just disabled) for `MANAGER` — but
+  since the backend already ignores a `MANAGER`'s client-supplied `scope`/`department` entirely
+  (API Contract 3d/3c), this UI choice is cosmetic, not a security control; re-confirmed no BFF
+  route or client fetch wrapper (`lib/dashboardApi.js`, `lib/wellnessReportsApi.js`) forges or
+  overrides the `department`/`scope`/`userId` a MANAGER's browser sends.
+- **No sensitive data surfaced or logged.** Grepped every file under `frontend/app` and
+  `frontend/lib` for `console.log`/`console.error`/`console.warn`: none exist, so no request body,
+  cookie, or response payload is ever logged. `backendProxy.js` forwards only the `cookie` header
+  and relays the backend's JSON body/status verbatim — it does not parse, cache, or re-log the
+  session cookie. Every dashboard/history component renders only the documented response fields
+  (`KpiCard`, `WellnessStatusDistribution`, `DepartmentWellnessScore`, `WeeklyWellnessTrend`,
+  `HighStressEmployee`, `WellnessHistory` rows) — none of which include `passwordHash` or a raw
+  token per the API Contract, and none of these components spread an entire response object into
+  the DOM (each destructures the specific fields it renders).
+
+*Verified end-to-end:* re-ran the existing `dashboardLiveBackendVerification.test.js` (9 tests) and
+`wellnessReportsLiveBackendVerification.test.js` (10 tests) — both drive the frontend's real BFF
+route handlers against the real backend Express app (`backend/src/app.js` via `createApp`,
+committed on this branch) over a real TCP socket with real signed `ewt_token` cookies, no mocked
+`fetch` — against this iteration's just-audited backend commit (`f60ae05`, S7 backend). Both suites
+still pass in full: a MANAGER's dashboard/history scope is still forced server-side even when a
+different department is requested, an ADMIN's org/department scope selector still round-trips
+correctly, KPI/status/trend/top-high-stress values still match seeded fixtures, and 401/403/404/400
+error paths still surface through the BFF unchanged. This confirms the backend's audit pass (new
+regression test + schema comments only, per its Change Log entry above) did not alter any documented
+response shape or status code this layer depends on — **no contract mismatch was found**. Full
+suite: `npx vitest run`: 194/194 frontend tests pass (unchanged count — this iteration added no new
+test, screen, or component, only read/traced existing code and re-ran existing live-backend
+suites as evidence). `python ci_check.py`: 94 backend + 194 frontend tests, all green.
