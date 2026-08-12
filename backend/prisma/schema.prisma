@@ -41,6 +41,9 @@ model User {
   updatedAt      DateTime        @updatedAt @map("updated_at")
   wellnessEntries WellnessEntry[]
 
+  // S7 perf audit: covers GET /api/dashboard/summary's and
+  // GET /api/wellness/history's department+status scoping (in place since
+  // S2 fix iteration 3) so both stay index-backed as the table grows.
   @@index([departmentId, isActive])
   @@map("users")
 }
@@ -74,6 +77,10 @@ model WellnessEntry {
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
+  // S7 perf audit: this unique constraint (in place since S3) is itself a
+  // composite index on (user_id, entry_date), covering the exact lookup
+  // GET /api/dashboard/summary and GET /api/wellness/history issue
+  // (userId IN (...) AND entryDate BETWEEN ...) without a full table scan.
   @@unique([userId, entryDate])
   @@map("wellness_entries")
 }

@@ -266,6 +266,40 @@ this endpoint, S5's dashboard, and any future S7 report can never drift apart on
   score per active employee in that department (one score per employee, not per entry); `score` is
   `null` when no employee in the department has any entries yet.
 
+## 3f. API Contract — Security & Performance Audit — introduced in S7 (Backend)
+S7 is a cross-cutting audit pass over the reporting surface (S4's history search, S5's dashboard
+summary), not a new feature with its own routes — no endpoint below is new; every one already
+existed and was re-verified against this story's technical requirements. Re-documented here in
+full (request/response shape, query params) per this story's contract, alongside the audit
+findings.
+
+- **`GET /api/dashboard/summary?scope=org|department&departmentId=`** (full contract: API Contract
+  3d) — `ADMIN`/`MANAGER` only. Re-confirmed this iteration: `req.user.role`/`req.user.departmentId`
+  are re-read from the verified JWT on every request (`authenticate` middleware, never trusted from
+  a prior response or the frontend); a `MANAGER`'s `scope`/`departmentId` are forced server-side in
+  `dashboardController.getSummary` regardless of the query string. All aggregation (KPI cards,
+  status distribution, department scores, weekly trend, top-5 high-stress) is computed via
+  `prisma.wellnessEntry.findMany`/`prisma.user.findMany` with `userId: { in: [...] }` and
+  `entryDate: { gte, lte }` `where` clauses — the query scans the `(user_id, entry_date)` index
+  (Data Models), not the full table, and averages/rankings are computed in-process over that
+  already-filtered result set, not client-side over an unfiltered dump.
+- **`GET /api/wellness/history?userId=&department=&from=&to=&mood=&page=&pageSize=&sortBy=&sortOrder=`**
+  (full contract: API Contract 3c) — `ADMIN`/`MANAGER` only, plus `enforceEmployeeDepartmentScope`
+  on the two `:id` routes. Re-confirmed this iteration: `wellnessHistoryController.getHistory` uses
+  `prisma.wellnessEntry.findMany({ where, orderBy, skip, take })` + a parallel `prisma.wellnessEntry
+  .count({ where })` (`utils/pagination.js`, capped at `pageSize=100`) — pagination and filtering
+  both happen in the query itself, never by fetching all rows and slicing in JS. A `MANAGER`'s
+  `department` value is still ignored server-side (forced to `req.user.departmentId`) and an
+  out-of-scope `userId` still returns an empty page rather than another department's rows.
+- **Audit findings:** no endpoint, route, or middleware required a code change to meet this story's
+  requirements — every route already re-validates role and department scope per request
+  (`authenticate` + `requireRole` on every router, `enforceEmployeeDepartmentScope` on the two
+  employee-scoped routes), no controller or serializer (`serializeUser`, `serializeHistoryRow`,
+  every dashboard/scoring response) ever includes `passwordHash` or a raw JWT, and no controller
+  logs request bodies, tokens, or user records. Both technical-plan indexes were already in place
+  (added in S2/S3) — see Data Models below for the S7 confirmation. Full test suite re-run this
+  iteration: 94 backend tests (90 prior + 4 new index-audit tests), all passing.
+
 ## 4. Data Models (cumulative)
 
 ### `roles` table — introduced in S2 (Backend), Prisma model `Role`
@@ -298,7 +332,10 @@ that was never committed), Prisma model `User`
 Composite index `users_department_id_is_active_idx` on `(department_id, is_active)` — introduced
 in S2 fix iteration 3 (migration `20260811090000_add_users_department_status_index`) — covers the
 `department`+`status` filter combination `GET /api/admin/users` supports, avoiding a full table
-scan as the table grows.
+scan as the table grows. **Confirmed in S7** as also satisfying that story's technical requirement
+of an indexed `users(department_id, is_active)` for `GET /api/dashboard/summary` (S5)/
+`GET /api/wellness/history` (S4) — no new index or migration was needed; see
+`backend/tests/schemaIndexAudit.test.js` for the regression check added this iteration.
 
 ### `wellness_entries` table — foundation introduced in S2, fields added in S3 (Backend), Prisma
 model `WellnessEntry`
@@ -314,6 +351,13 @@ model `WellnessEntry`
 | `energyLevel` | enum `EnergyLevel` (column `energy_level`) | `VERY_LOW\|LOW\|MEDIUM\|HIGH\|VERY_HIGH` |
 | `createdAt`   | `DateTime`, default now (column `created_at`) |                                    |
 | `updatedAt`   | `DateTime`, auto-updated (column `updated_at`) |                                   |
+
+The `UNIQUE(user_id, entry_date)` constraint (introduced in S3, migration
+`20260812100000_add_wellness_entry_fields`) is itself a composite index on `(user_id, entry_date)`.
+**Confirmed in S7** as satisfying that story's technical requirement of an indexed
+`wellness_entries(user_id, entry_date)` for `GET /api/dashboard/summary` (S5)/
+`GET /api/wellness/history` (S4)'s `userId IN (...) AND entryDate BETWEEN ...` queries — no new
+index or migration was needed; see `backend/tests/schemaIndexAudit.test.js`.
 
 ### `WellnessHistory` / `EmployeeProfile` — introduced in S4 (Backend), read-model shapes, not
 new tables
@@ -1344,3 +1388,54 @@ skipped are exactly this suite's two files, skipping via the new guard rather th
 `python ci_check.py`: passes clean (previously would have failed with 8 failures before this fix,
 reproduced above). Against the real S6 backend (temporarily materialized, not committed): 194/194,
 0 skipped, 0 failed.
+
+### Story S7
+**Backend (iteration 1):** Cross-cutting security/performance audit pass over the existing
+`GET /api/dashboard/summary` (S5) and `GET /api/wellness/history` (S4) reporting surface — this
+story's technical requirements deliberately scope it as "a cross-cutting audit pass, not a
+standalone feature with its own new endpoints," so no new route was added. Systematically
+re-verified every requirement in the technical plan against the code already on this branch
+(built up over S2-S6):
+
+- **Indexed columns.** `wellness_entries(user_id, entry_date)` and `users(department_id,
+  is_active)` were both already indexed (S3's `UNIQUE(user_id, entry_date)` constraint and S2 fix
+  iteration 3's `users_department_id_is_active_idx`, respectively) — confirmed both are real,
+  already-applied composite indexes, not just Prisma-schema declarations with no corresponding
+  migration, by reading the migration SQL directly. Added `backend/tests/schemaIndexAudit.test.js`
+  (4 tests) as a permanent regression check — asserting the index/constraint annotations are
+  present in `prisma/schema.prisma` *and* the matching `CREATE INDEX`/`CREATE UNIQUE INDEX`
+  statements are present in the applied migration SQL — so a future schema edit can't silently drop
+  either index without failing CI. Added short audit comments to `prisma/schema.prisma` on both
+  annotations recording which S7 requirement each satisfies.
+- **Server-side aggregation.** Re-read `dashboardController.js`/`dashboardMetrics.js` and
+  `wellnessHistoryController.js` line by line: every KPI/status/trend/ranking computation and the
+  history grid's filtering/sorting/pagination is done via Prisma `where`/`orderBy`/`skip`/`take`/
+  `count` against the two indexed columns above, never by fetching an unfiltered table into memory
+  and reducing client-side (JS) — this was already true as of S4/S5's original implementation and
+  S5 fix iteration 2's tie-break ordering fix; no change was needed.
+- **Authorization re-validation.** Confirmed every route under `/api/dashboard` and
+  `/api/wellness/history` (plus the two `:id` employee routes) runs `authenticate` (re-verifies the
+  JWT and re-derives `req.user` from its signed claims on every request, never trusting a cached or
+  client-supplied role/department) followed by `requireRole(["ADMIN", "MANAGER"])`, and that a
+  `MANAGER`'s scope is forced server-side in the controller itself (`dashboardController.getSummary`,
+  `wellnessHistoryController.getHistory`) rather than only filtered in the frontend — already true
+  since S4/S5, re-confirmed by reading `routes/dashboardRoutes.js`/`routes/wellnessRoutes.js` and
+  both controllers.
+- **Data protection.** Confirmed `passwordHash` is bcrypt-only (cost 10, `adminUsersController.js`)
+  and never appears in any response — every user-serializing function (`serializeUser`,
+  `serializeHistoryRow`, the dashboard/scoring builders) explicitly picks its output fields rather
+  than spreading a raw Prisma row — and that no controller `console.log`s a request body, token, or
+  full user/entry record (`grep`'d every file under `backend/src/controllers`). JWT verification
+  (`middleware/authenticate.js`) already fails startup if `JWT_SECRET` is unset (S2 fix iteration 2)
+  rather than falling back to a forgeable empty secret; HTTPS/cookie-`Secure` enforcement is a
+  deployment/S1-frontend-proxy concern (already documented in API Contract, section 3) and out of
+  this backend layer's scope.
+
+No functional endpoint, controller, or middleware code required a change — the audit found the
+existing implementation already compliant with every S7 requirement. The only substantive edits
+are the new regression test and the two explanatory schema comments above; `PROJECT_CONTEXT.md`
+sections 3f (new) and the `users`/`wellness_entries` Data Models entries were extended per the
+audit findings (this entry).
+
+`node --test` in `backend/`: 94/94 passing (90 prior + 4 new). `python ci_check.py`: 94 backend +
+194 frontend tests, all green (frontend unchanged and untouched by this layer).
