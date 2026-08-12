@@ -1,10 +1,5 @@
 const { average } = require("./wellnessMetrics");
-const {
-  averageWellnessScore,
-  WELLNESS_STATUS_CATEGORIES,
-  classifyWellnessScore,
-  ATTENTION_STRESS_THRESHOLD,
-} = require("./wellnessScore");
+const { calculateWellnessScore, getClassificationCategory, getEmployeesRequiringAttention } = require("./wellnessScoring");
 const { toDateOnlyString, parseDateOnly, todayDateString } = require("../controllers/wellnessEntriesController");
 
 const TOP_HIGH_STRESS_LIMIT = 5;
@@ -16,7 +11,38 @@ const TREND_DAYS = 7;
  * response section -- no Prisma calls here, so these are unit-testable
  * without a fake DB and keep dashboardController.js focused on
  * request/scope orchestration only.
+ *
+ * Scoring is delegated entirely to the shared src/utils/wellnessScoring.js
+ * module (S6) so this dashboard and the S6 wellness-scores endpoints can
+ * never drift apart on the formula/thresholds/classification -- see the
+ * Data Models note in PROJECT_CONTEXT.md for why the two used to diverge.
  */
+
+/** Wellness-status distribution buckets, in the API Contract's documented order. */
+const WELLNESS_STATUS_CATEGORIES = ["THRIVING", "STABLE", "AT_RISK", "CRITICAL"];
+
+/** Maps wellnessScoring.js's human-readable classification label to this dashboard's enum-style bucket key. */
+const CLASSIFICATION_LABEL_TO_STATUS = {
+  Thriving: "THRIVING",
+  Stable: "STABLE",
+  "At Risk": "AT_RISK",
+  Critical: "CRITICAL",
+};
+
+/** Per-entry 0-100 wellness score via the shared formula. */
+function scoreEntry(entry) {
+  return calculateWellnessScore(entry.stressLevel, Number(entry.sleepHours), entry.energyLevel);
+}
+
+/** Average wellness score across a set of entries via the shared formula; null when entries is empty. */
+function averageWellnessScore(entries) {
+  return average(entries.map(scoreEntry));
+}
+
+/** Buckets an average wellness score into this dashboard's enum-style status key. */
+function classifyWellnessScore(score) {
+  return CLASSIFICATION_LABEL_TO_STATUS[getClassificationCategory(score)];
+}
 
 function todayDateOnly() {
   return parseDateOnly(todayDateString());
@@ -58,7 +84,8 @@ function buildKpiCards({ totalActiveEmployees, submissionsToday, avgWellnessScor
     {
       name: "Employees Requiring Attention",
       value: employeesRequiringAttention,
-      description: "Employees whose trailing 7-day average stress level meets or exceeds the attention threshold",
+      description:
+        "Employees whose trailing 7-day average stress level or wellness score crosses the attention threshold",
     },
   ];
 }
@@ -67,11 +94,12 @@ function buildKpiCards({ totalActiveEmployees, submissionsToday, avgWellnessScor
 function buildKpiSection({ totalActiveEmployees, entriesToday, weekEntries, weekByUser }) {
   const submissionsToday = entriesToday.length;
   const avgWellnessScore = averageWellnessScore(weekEntries);
-  let employeesRequiringAttention = 0;
-  for (const userEntries of weekByUser.values()) {
-    const avgStress = average(userEntries.map((e) => e.stressLevel));
-    if (avgStress !== null && avgStress >= ATTENTION_STRESS_THRESHOLD) employeesRequiringAttention += 1;
-  }
+  const perEmployeeAverages = [...weekByUser.entries()].map(([employeeId, userEntries]) => ({
+    employeeId,
+    avgStressLevel: average(userEntries.map((e) => e.stressLevel)),
+    avgWellnessScore: averageWellnessScore(userEntries),
+  }));
+  const employeesRequiringAttention = getEmployeesRequiringAttention(perEmployeeAverages).length;
   return buildKpiCards({ totalActiveEmployees, submissionsToday, avgWellnessScore, employeesRequiringAttention });
 }
 

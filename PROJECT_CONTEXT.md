@@ -28,10 +28,12 @@ backend/
     routes/adminRoutes.js           # mounts /api/admin/* , requires ADMIN
     routes/dashboardRoutes.js       # mounts /api/dashboard/* , requires ADMIN/MANAGER, S5
     utils/validators.js, utils/pagination.js, utils/asyncHandler.js
-    utils/wellnessScore.js          # computeWellnessScore/classifyWellnessScore, S5
+    utils/dashboardMetrics.js       # KPI/status/trend/high-stress builders, S5
+    utils/wellnessScoring.js        # shared score/classification/attention formulas, S6
+    controllers/wellnessScoringController.js, routes/departmentWellnessRoutes.js   # S6
   tests/
     adminUsers.test.js, adminDepartments.test.js, adminRoles.test.js, authMiddleware.test.js
-    dashboardSummary.test.js, wellnessScore.test.js                          # S5
+    dashboardSummary.test.js, wellnessScoring.test.js, wellnessScoresEndpoints.test.js  # S5/S6
     helpers/fakePrisma.js           # in-memory Prisma double, no live DB in this environment
     helpers/testApp.js, helpers/dashboardFixtures.js
 
@@ -225,11 +227,15 @@ five separate calls.
   `WeeklyWellnessTrend` use, kept consistent across the whole payload. `200` body:
   - `kpiCards: KpiCard[]` — `Total Active Employees`, `Submissions Today` (entries dated today),
     `Average Wellness Score` (trailing-7-day, `null` if no entries), `Employees Requiring
-    Attention` (trailing-7-day avg `stressLevel` ≥ `ATTENTION_STRESS_THRESHOLD`, provisionally `7`
-    pending S6's formal threshold — see Data Models).
-  - `wellnessStatusDistribution: WellnessStatusDistribution[]`, one row per provisional category
-    (`THRIVING`/`STABLE`/`AT_RISK`/`CRITICAL`, see Data Models), counting only employees with at
-    least one entry in the trailing 7 days (no data = unclassifiable, not a fifth bucket).
+    Attention` (as of S6 fix iteration 2: trailing-7-day avg `stressLevel` ≥
+    `ATTENTION_STRESS_THRESHOLD (8)` OR avg wellness score < `ATTENTION_WELLNESS_SCORE_THRESHOLD
+    (40)`, S6's formal rule — see Data Models; previously a provisional stress-only threshold of
+    `7`).
+  - `wellnessStatusDistribution: WellnessStatusDistribution[]`, one row per category
+    (`THRIVING`/`STABLE`/`AT_RISK`/`CRITICAL`, see Data Models; as of S6 fix iteration 2 these
+    buckets are S6's formal classification thresholds, not the provisional ones this endpoint
+    originally shipped with), counting only employees with at least one entry in the trailing 7
+    days (no data = unclassifiable, not a fifth bucket).
   - `departmentWellnessScores: DepartmentWellnessScore[]` — one row per department in scope (all
     active departments for `scope=org`, the single requested one for `scope=department`); `score`
     is `null` for a department with no entries in the window; `employeeCount` counts all active
@@ -239,6 +245,26 @@ five separate calls.
   - `topHighStressEmployees: HighStressEmployee[]` — ranked by trailing-7-day average
     `stressLevel` descending, ties broken by most recent submission descending; capped at 5;
     excludes employees with no entries in the window (nothing to rank).
+
+## 3e. Wellness scoring endpoints — introduced in S6 (Backend)
+Both routes require `authenticate` + `requireRole(["ADMIN", "MANAGER"])`, with the same
+"never trust client scope" rule the S4/S5 endpoints above enforce for a `MANAGER`. Every score is
+computed by the shared, pure `backend/src/utils/wellnessScoring.js` module (see Data Models) so
+this endpoint, S5's dashboard, and any future S7 report can never drift apart on the formula.
+
+- **`GET /api/wellness/scores?department=`** — Returns a list of employee wellness scores. For an
+  `ADMIN`, `department` is optional (an integer department id, `400` if malformed) and omitting it
+  returns every active `EMPLOYEE`-role user org-wide; for a `MANAGER`, scope is always forced to
+  their own department, ignoring any client-supplied `department` entirely (a `MANAGER` with no
+  assigned department gets an empty list rather than an error). `200`: `{ data: WellnessScore[] }`
+  — one row per employee's single most recent wellness entry; an employee with no entries yet has
+  no score to report and is omitted (no zero/null placeholder row).
+- **`GET /api/departments/{departmentId}/wellness/score`** — Returns the department wellness score
+  for the given `departmentId`. `400` if `departmentId` is malformed. An `ADMIN` may request any
+  department; a `MANAGER` may only request their own (`403` otherwise). `404` if the department
+  doesn't exist. `200`: `DepartmentWellnessScore` — the arithmetic mean of the latest wellness
+  score per active employee in that department (one score per employee, not per entry); `score` is
+  `null` when no employee in the department has any entries yet.
 
 ## 4. Data Models (cumulative)
 
@@ -315,20 +341,60 @@ not persisted separately.
 - `WeeklyWellnessTrend`: `{ date: YYYY-MM-DD, score: number|null }`.
 - `HighStressEmployee`: `{ employeeId: int, name: string, stressLevel: number }` (average, not raw).
 
-`src/utils/wellnessScore.js` owns the two provisional metrics these shapes depend on, since neither
-exists yet on `wellness_entries` or anywhere else in this contract:
-- `computeWellnessScore(entry)` — a 0-100 composite: the mean of inverted-stress
-  (`(11 - stressLevel) / 10 * 100`), energy (`ENERGY_LEVEL_SCORE / 5 * 100`), and sleep-adequacy
-  (`min(sleepHours, 8) / 8 * 100`, capped at 8h as the healthy target) components.
-  `classifyWellnessScore(score)` buckets it into the four `WellnessStatusDistribution` categories
-  (`>=75` THRIVING, `>=50` STABLE, `>=25` AT_RISK, else CRITICAL).
-- `ATTENTION_STRESS_THRESHOLD = 7` — the trailing-7-day average `stressLevel` at/above which an
-  employee counts toward the `Employees Requiring Attention` KPI.
+> **Superseded in S6 fix iteration 2:** this section originally described `src/utils/wellnessScore.js`,
+> a standalone module holding two *provisional* S5-era metrics (`computeWellnessScore` — mean of
+> inverted-stress/energy/sleep-adequacy components — and `classifyWellnessScore`/
+> `ATTENTION_STRESS_THRESHOLD = 7`), explicitly deferring the authoritative formula/thresholds to
+> S6. `wellnessScore.js` has been deleted; `src/utils/dashboardMetrics.js` now computes every score,
+> classification bucket, and attention flag these shapes need via the shared
+> `src/utils/wellnessScoring.js` module instead (see its Data Models entry below and the S6 fix
+> Change Log), so this dashboard and the S6 wellness-scores endpoints can no longer drift apart.
 
-Both are explicitly **provisional**: this story's technical plan defers the authoritative
-classification/threshold rules to S6 (not yet built). Keeping them as named constants/functions in
-one file means a future S6 change only has to touch `wellnessScore.js`, not the dashboard
-controller or its response shape.
+### `WellnessScore` / `DepartmentWellnessScore` (S6 endpoint response) — introduced in S6 (Backend),
+read-model shapes, not new tables
+Response shapes for the S6 API Contract (3e) endpoints, computed at request time by
+`wellnessScoringController.js` from `wellness_entries`/`users` — same "no new table" approach as
+every other read-model shape above.
+- `WellnessScore`: `{ employeeId: number, score: number, classificationCategory: string }` — one
+  row per employee's single most recent wellness entry.
+- `DepartmentWellnessScore`: `{ departmentId: number, score: number }` — the response body of
+  `GET /api/departments/{departmentId}/wellness/score` (a single department, `score` nullable).
+  Note this name is intentionally reused from S5's `DepartmentWellnessScore` above, a different,
+  wider shape (`{ departmentId, name, score, employeeCount }`, one row per department in a
+  dashboard-summary list) — the two are never returned from the same endpoint, so the field lists
+  above disambiguate them per call site.
+
+`backend/src/utils/wellnessScoring.js` is the shared, pure module both S6 endpoints (and any future
+S7 report) import, so the formula can never drift between screens:
+- `calculateWellnessScore(stressLevel, sleepHours, energyLevel)` — the story's formally specified
+  0-100 composite: `round(0.4*(100 - stressLevel*10) + 0.3*min(sleepHours/8, 1)*100 +
+  0.3*getEnergyScore(energyLevel))`, clamped to `[0, 100]`.
+- `getEnergyScore(energyLevel)` — `VERY_LOW=0, LOW=25, MEDIUM=50, HIGH=75, VERY_HIGH=100`.
+  Deliberately a separate mapping from `wellnessMetrics.ENERGY_LEVEL_SCORE` (1-5), which S4's
+  history/trend/profile aggregates use for their own (unrelated) numeric `energyScore` field — this
+  module's mapping is only for the wellness-score formula above.
+- `calculateDepartmentWellnessScore(latestScoresByEmployee)` — arithmetic mean of an array of
+  already-deduplicated (one per employee) scores; `null` when empty.
+- `getEmployeesRequiringAttention(employees)` — filters `{ employeeId, avgStressLevel,
+  avgWellnessScore }` records, flagging trailing-7-day avg `stressLevel >=
+  ATTENTION_STRESS_THRESHOLD (8)` OR avg `wellnessScore < ATTENTION_WELLNESS_SCORE_THRESHOLD (40)`.
+  As of S6 fix iteration 2, this is wired into `GET /api/dashboard/summary`'s "Employees Requiring
+  Attention" KPI (see the S6 fix Change Log entry below) — the S5 dashboard is no longer a separate
+  caller with its own rule.
+- `getClassificationCategory(score)` — `Critical (<40)`, `At Risk (40-59)`, `Stable (60-79)`,
+  `Thriving (80-100)`.
+
+`src/utils/dashboardMetrics.js` (S5) now imports `calculateWellnessScore`/`getClassificationCategory`/
+`getEmployeesRequiringAttention` from this module directly for every score/category/attention-flag
+the dashboard computes — the standalone `wellnessScore.js` module (S5's original, provisional
+`computeWellnessScore`/`classifyWellnessScore`/`ATTENTION_STRESS_THRESHOLD (7)`) was removed in S6
+fix iteration 2. A `CLASSIFICATION_LABEL_TO_STATUS` lookup in `dashboardMetrics.js` maps this
+module's human-readable labels (`"Thriving"`, `"Stable"`, `"At Risk"`, `"Critical"`) to the
+dashboard's existing enum-style `WellnessStatusDistribution.category` values (`THRIVING`/`STABLE`/
+`AT_RISK`/`CRITICAL`) so the S5 API Contract response shape is unchanged even though the underlying
+formula now is. The S5 dashboard and the S6 `/api/wellness/scores`/
+`/api/departments/:id/wellness/score` endpoints compute every wellness score identically as of this
+fix — see the S6 fix Change Log entry for the resulting KPI/status-distribution value changes.
 
 ## 5. Change Log (per story, per layer)
 
@@ -1050,3 +1116,103 @@ live-verification suite already covers, including its existing "a real 400 when 
 is requested with no departmentId" case, which documents the exact backend behavior this frontend
 fix now avoids triggering prematurely). `npx vitest run`: 166/166 frontend tests pass (165 prior +
 1 new regression case). `python ci_check.py`: 70 backend + 166 frontend tests, all green.
+
+### Story S6
+**Backend (iteration 1):** Added `backend/src/utils/wellnessScoring.js`, a new pure, unit-testable
+module holding this story's formally specified wellness business rules (see API Contract 3e and
+Data Models), exporting `calculateWellnessScore`, `getEnergyScore`,
+`calculateDepartmentWellnessScore`, `getEmployeesRequiringAttention`, and
+`getClassificationCategory`, plus the `ATTENTION_STRESS_THRESHOLD`/
+`ATTENTION_WELLNESS_SCORE_THRESHOLD` constants. The story named the file `wellnessScoring.ts`, but
+this project has no TypeScript toolchain anywhere (`backend/package.json` has no `typescript`/
+`ts-node` dependency, and every existing module under `backend/src/` is plain CommonJS `.js` —
+`wellnessScore.js`, `wellnessMetrics.js`, `dashboardMetrics.js`, etc.); a lone `.ts` file would not
+be loadable by `require()` without adding a build step no other backend file needs. Implemented it
+as `wellnessScoring.js` instead, following the existing coding standard, and noting the naming
+deviation here rather than silently diverging from the story text.
+
+Added two new endpoints (both `authenticate` + `requireRole(["ADMIN", "MANAGER"])`, `backend/src/
+controllers/wellnessScoringController.js`):
+- `GET /api/wellness/scores?department=` (wired into `wellnessRoutes.js`) — lists each in-scope
+  active `EMPLOYEE`'s most recent wellness score and classification, computed via the new module;
+  a `MANAGER`'s department is always forced server-side (client-supplied `department` ignored),
+  matching the existing `GET /api/wellness/history`/`GET /api/dashboard/summary` scoping rule.
+- `GET /api/departments/:departmentId/wellness/score` (new `backend/src/routes/
+  departmentWellnessRoutes.js`, mounted at `/api/departments` in `app.js`) — the department's mean
+  latest-score; a `MANAGER` requesting another department gets `403`, an unknown department `404`.
+
+`latestEntryByUser`/`latestScoresByEmployee` (in the new controller) reduce each employee's
+`wellnessEntry.findMany` rows down to their single most-recent entry in JS before scoring, since
+this in-memory-fake-Prisma environment has no `groupBy` support for `wellnessEntry` (the `user`
+model's `groupBy`, S2, doesn't cover it) — an employee with zero entries yet is simply omitted from
+both endpoints' results, not returned as a null/zero placeholder.
+
+Added `validateWellnessScoresQuery` to `utils/validators.js` (reusing the existing
+`isPositiveIntegerString`, same `400 { errors }` contract as every other query validator here).
+
+Deliberately did not touch `dashboardController.js`/`wellnessScore.js` (S5) to consume the new
+module — see the Data Models note on why the two threshold/formula sets stay independent for now;
+reconciling them is out of this story's scope.
+
+`backend/tests/wellnessScoring.test.js` (14 tests): unit coverage of every exported function,
+including the formula's exact weighted-sum arithmetic, the sleep-hours cap, clamping a raw value
+below 0, both classification boundary edges, and `getEmployeesRequiringAttention`'s OR logic
+(high-stress-alone, low-score-alone, and never flagging on a `null`/no-data average).
+`backend/tests/wellnessScoresEndpoints.test.js` (11 tests, real HTTP via supertest against the real
+Express app + fake Prisma, no live Postgres in this environment, same constraint as every prior
+story): 401/403 on both routes, an ADMIN org-wide listing that picks each employee's *latest* (not
+first) entry and omits an employee with none, ADMIN `?department=` filtering and its `400` on a
+malformed value, a MANAGER's request ignoring a supplied `department`, the department-score mean
+and its `null` case (a department whose only employee has no entries), the `404` on an unknown
+department, and a MANAGER's `403`/`200` boundary on requesting another vs. their own department.
+
+`node --test` in `backend/`: 95/95 passing (72 prior + 23 new). `python ci_check.py`: 95 backend +
+166 frontend tests, all green (frontend unchanged and untouched by this layer).
+
+**Fixes (iteration 2) — backend:** Addressed both review findings.
+
+1. *Two independent wellness-score formulas coexisted in production (blocking).* The technical
+   requirements mandate `wellnessScoring.js` be the single shared module every consumer (S5
+   dashboard, S4 trend, S7 reports) computes wellness scores through, so scores never drift between
+   screens — iteration 1 built the module and its two new endpoints but left `dashboardController.js`
+   on S5's original, separately-thresholded `wellnessScore.js` (`computeWellnessScore`'s unweighted
+   3-way mean vs. this module's `0.4/0.3/0.3`-weighted formula; `classifyWellnessScore`'s `>=75/
+   >=50/>=25` cutoffs vs. `getClassificationCategory`'s `80/60/40` cutoffs; `ATTENTION_STRESS_
+   THRESHOLD` `7` vs. `8`, and no wellness-score-based attention rule at all) — a real, user-visible
+   correctness issue where the same day's data could show a different score/classification on the
+   manager dashboard than on the new wellness-scores screen. Migrated `src/utils/dashboardMetrics.js`
+   (S5) to import `calculateWellnessScore`/`getClassificationCategory`/`getEmployeesRequiringAttention`
+   directly from `wellnessScoring.js` for every score, classification, and attention-flag it
+   computes, and deleted the now-unused `src/utils/wellnessScore.js` (and its
+   `tests/wellnessScore.test.js`) entirely rather than leaving a second, now-dead formula in the
+   tree. Added a small `CLASSIFICATION_LABEL_TO_STATUS` lookup in `dashboardMetrics.js` mapping this
+   module's human-readable labels (`"Thriving"`/`"Stable"`/`"At Risk"`/`"Critical"`) to the S5 API
+   Contract's existing enum-style `WellnessStatusDistribution.category` values (`THRIVING`/`STABLE`/
+   `AT_RISK`/`CRITICAL`), so the dashboard's response *shape* is unchanged even though the formula
+   underneath it now is — no frontend change required. The "Employees Requiring Attention" KPI now
+   also flags on a low trailing-7-day average wellness score (`getEmployeesRequiringAttention`'s OR
+   rule), not stress alone, matching this story's formal business rule.
+   Recomputed `tests/dashboardSummary.test.js`'s fixture-derived numeric assertions by hand against
+   the new shared formula (KPI average, per-category distribution counts, department scores, and
+   the 3 non-null trend points) and confirmed them against a live run — see the diff for the exact
+   before/after values. The "Employees Requiring Attention" *count* (2) and the top-high-stress
+   *ranking* (driven by raw `stressLevel`, not the wellness-score formula) were unaffected.
+2. *ADMIN department-filter/404 inconsistency (minor).* `GET /api/wellness/scores?department=`
+   validated `department` was a well-formed integer but never checked the department actually
+   existed, so an ADMIN filtering by a nonexistent department silently got back `{ data: [] }` —
+   inconsistent with the sibling `GET /api/departments/:departmentId/wellness/score`, which `404`s
+   for the same case. Added the same existence check to `wellnessScoringController.js`'s
+   `getEmployeeWellnessScores` (ADMIN branch only, matching where a `department` value is actually
+   used): a `department` query value that doesn't match a real department now returns `404
+   { error: "Department not found" }` before ever querying users/entries.
+
+Added `tests/wellnessScoresEndpoints.test.js` coverage for the new 404 case. No test changed for
+finding 2 in `dashboardSummary.test.js`/`wellnessScoring.test.js` beyond the recomputed numeric
+fixtures above — every function `wellnessScoring.js` exports was already fully unit-tested in
+iteration 1 and is unchanged by this fix; only its *caller* changed.
+
+`node --test` in `backend/`: 90/90 passing (95 prior − 6 removed `wellnessScore.test.js` cases + 1
+new 404 case). `python ci_check.py`: 90 backend + 194 frontend tests, all green (the frontend's S6
+screens/tests were added to the working tree independently of this layer's fix and required no
+changes here — they consume the unchanged `WellnessScore`/`DepartmentWellnessScore` response
+shapes).
