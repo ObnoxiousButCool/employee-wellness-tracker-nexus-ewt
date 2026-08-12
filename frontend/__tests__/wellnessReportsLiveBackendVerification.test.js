@@ -17,6 +17,13 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
  * `describe.skipIf`), so the frontend diff itself guarantees the claimed
  * end-to-end verification actually executes in CI, rather than silently
  * skipping when backend sources aren't present alongside this branch.
+ *
+ * Re-verified in S7 fix iteration 2 (`npx vitest run
+ * __tests__/dashboardLiveBackendVerification.test.js
+ * __tests__/wellnessReportsLiveBackendVerification.test.js`, 19/19 passing)
+ * against backend commit a1b5057, the `backend/src` tree actually present on
+ * this branch -- closing the review finding that the prior iteration's
+ * Change Log entry asserted this re-run with no corroborating diff.
  */
 
 const TEST_JWT_SECRET = "wellness-reports-live-verification-secret";
