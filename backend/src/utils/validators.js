@@ -16,15 +16,19 @@ function isNumberInRange(value, min, max) {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
-const POSITIVE_INTEGER_RE = /^\d+$/;
+// No leading zeros and no leading "0" itself — "0" is not a positive
+// integer, and "01"/"007" are ambiguous re-encodings of a plain int.
+const POSITIVE_INTEGER_RE = /^[1-9]\d*$/;
 
 /**
  * Strictly validates that a raw query/path string is an exact positive
  * integer — unlike Number.parseInt, which stops at the first non-digit
- * character and silently accepts "12abc" as 12.
+ * character and silently accepts "12abc" as 12. Deliberately does not
+ * trim: a whitespace-padded value (e.g. " 12") is malformed input, not a
+ * value to silently normalize before it reaches a WHERE clause.
  */
 function isPositiveIntegerString(value) {
-  return typeof value === "string" && POSITIVE_INTEGER_RE.test(value.trim());
+  return typeof value === "string" && POSITIVE_INTEGER_RE.test(value);
 }
 
 /**

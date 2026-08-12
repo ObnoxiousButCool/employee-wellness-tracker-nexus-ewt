@@ -76,7 +76,12 @@ async function getHistory(req, res) {
   const [rows, total] = await Promise.all([
     prisma.wellnessEntry.findMany({
       where: entryWhere,
-      orderBy: { [sortBy]: sortOrder },
+      // A secondary sort on the unique id breaks ties on the primary key
+      // deterministically -- without it, rows sharing a sortBy value (e.g.
+      // the same entryDate) can be returned in a different relative order
+      // across pages/requests, which either duplicates or skips rows under
+      // pagination.
+      orderBy: [{ [sortBy]: sortOrder }, { id: "asc" }],
       skip,
       take,
     }),

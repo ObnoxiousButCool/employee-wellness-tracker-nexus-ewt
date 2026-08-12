@@ -199,11 +199,19 @@ function createFakePrisma({ roles = [], departments = [], users = [], wellnessEn
       async findMany({ where = {}, orderBy, skip = 0, take } = {}) {
         let rows = state.wellnessEntries.filter((w) => matchesWhere(w, where));
         if (orderBy) {
-          const [field] = Object.keys(orderBy);
-          const dir = orderBy[field];
+          // Prisma accepts either a single orderBy object or an array of
+          // them for a multi-field sort (first entry wins, later entries
+          // break ties) -- support both so callers can add a deterministic
+          // tiebreaker (e.g. `id`) alongside the primary sort column.
+          const clauses = Array.isArray(orderBy) ? orderBy : [orderBy];
           rows = [...rows].sort((a, b) => {
-            const cmp = compareValues(a[field], b[field]);
-            return dir === "asc" ? cmp : -cmp;
+            for (const clause of clauses) {
+              const [field] = Object.keys(clause);
+              const dir = clause[field];
+              const cmp = compareValues(a[field], b[field]);
+              if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
+            }
+            return 0;
           });
         }
         rows = rows.slice(skip, take !== undefined ? skip + take : undefined);
