@@ -4,38 +4,26 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchDashboardSummary } from "../../lib/dashboardApi";
 import { fetchDepartments } from "../../lib/adminApi";
 import { subscribeToWellnessEntrySubmitted } from "../../lib/wellnessEvents";
-
-const CHART_WIDTH = 480;
-const CHART_HEIGHT = 160;
-
-function buildPolylinePoints(points) {
-  const known = points.filter((p) => p.score !== null);
-  if (known.length === 0) return "";
-  const values = known.map((p) => p.score);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const stepX = points.length > 1 ? CHART_WIDTH / (points.length - 1) : 0;
-
-  return points
-    .filter((p) => p.score !== null)
-    .map((p) => {
-      const i = points.indexOf(p);
-      const x = points.length > 1 ? i * stepX : CHART_WIDTH / 2;
-      const y = CHART_HEIGHT - ((p.score - min) / span) * CHART_HEIGHT;
-      return `${x},${y}`;
-    })
-    .join(" ");
-}
+import DashboardScopeFilter from "./DashboardScopeFilter";
+import KpiCards from "./KpiCards";
+import WellnessStatusDistribution from "./WellnessStatusDistribution";
+import DepartmentWellnessScores from "./DepartmentWellnessScores";
+import WeeklyTrendChart from "./WeeklyTrendChart";
+import TopHighStressList from "./TopHighStressList";
 
 /**
  * Admin/Manager dashboard, consuming `GET /api/dashboard/summary` (S5). One
  * round trip returns the full KPI payload: KPI cards, wellness status
  * distribution, department wellness scores, the last 7 days of trend, and
  * the top-5 high-stress list. A MANAGER's scope is always forced to their
- * own department server-side, so the department selector below is
- * ADMIN-only, matching the pattern `WellnessHistoryGrid` (S4) already uses
- * for its department filter.
+ * own department server-side, so the department selector is ADMIN-only,
+ * matching the pattern `WellnessHistoryGrid` (S4) already uses for its
+ * department filter.
+ *
+ * For an ADMIN who switches to "Single department" scope, the backend
+ * requires a `departmentId` and 400s without one (S5 API Contract) -- so the
+ * fetch is held back until a department is actually picked, rather than
+ * firing immediately on every scope change.
  *
  * Refetches automatically after a successful wellness submission
  * (`POST /api/wellness/entries`, S3) via `wellnessEvents.js`'s same-tab
@@ -49,7 +37,7 @@ export default function DashboardSummary({ role }) {
   const [departments, setDepartments] = useState([]);
 
   const [summary, setSummary] = useState(null);
-  const [loadState, setLoadState] = useState("loading"); // loading | ready | error
+  const [loadState, setLoadState] = useState("loading"); // loading | ready | error | pending-department
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
@@ -59,7 +47,15 @@ export default function DashboardSummary({ role }) {
     });
   }, [role]);
 
+  const awaitingDepartmentPick = role === "ADMIN" && scope === "department" && !departmentId;
+
   const load = useCallback(async () => {
+    if (awaitingDepartmentPick) {
+      setSummary(null);
+      setLoadState("pending-department");
+      return;
+    }
+
     setLoadState("loading");
     setErrorMessage("");
 
@@ -78,7 +74,7 @@ export default function DashboardSummary({ role }) {
 
     setSummary(result.data);
     setLoadState("ready");
-  }, [role, scope, departmentId]);
+  }, [role, scope, departmentId, awaitingDepartmentPick]);
 
   useEffect(() => {
     load();
@@ -86,161 +82,59 @@ export default function DashboardSummary({ role }) {
 
   useEffect(() => subscribeToWellnessEntrySubmitted(load), [load]);
 
+  const filter = role === "ADMIN" && (
+    <DashboardScopeFilter
+      scope={scope}
+      onScopeChange={setScope}
+      departmentId={departmentId}
+      onDepartmentIdChange={setDepartmentId}
+      departments={departments}
+    />
+  );
+
   if (loadState === "loading" && !summary) {
-    return <p role="status">Loading dashboard…</p>;
+    return (
+      <section aria-label="Dashboard summary">
+        {filter}
+        <p role="status">Loading dashboard…</p>
+      </section>
+    );
+  }
+
+  if (loadState === "pending-department") {
+    return (
+      <section aria-label="Dashboard summary">
+        {filter}
+        <p>Select a department to view its dashboard.</p>
+      </section>
+    );
   }
 
   if (loadState === "error") {
     return (
-      <div role="alert">
-        <p>{errorMessage}</p>
-        <button type="button" onClick={load}>
-          Retry
-        </button>
-      </div>
+      <section aria-label="Dashboard summary">
+        {filter}
+        <div role="alert">
+          <p>{errorMessage}</p>
+          <button type="button" onClick={load}>
+            Retry
+          </button>
+        </div>
+      </section>
     );
   }
 
   return (
     <section aria-label="Dashboard summary">
-      {role === "ADMIN" && (
-        <form
-          onSubmit={(e) => e.preventDefault()}
-          aria-label="Dashboard scope filter"
-        >
-          <label htmlFor="dashboard-scope">Scope</label>
-          <select id="dashboard-scope" value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="org">Organization-wide</option>
-            <option value="department">Single department</option>
-          </select>
-
-          {scope === "department" && (
-            <>
-              <label htmlFor="dashboard-department">Department</label>
-              <select
-                id="dashboard-department"
-                value={departmentId}
-                onChange={(e) => setDepartmentId(e.target.value)}
-              >
-                <option value="">Select a department</option>
-                {departments.map((dept) => (
-                  <option key={dept.id} value={dept.id}>
-                    {dept.name}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-        </form>
-      )}
+      {filter}
 
       {summary && (
         <>
-          <ul aria-label="KPI cards">
-            {summary.kpiCards.map((card) => (
-              <li key={card.name}>
-                <h3>{card.name}</h3>
-                <p data-testid={`kpi-${card.name}`}>{card.value === null ? "—" : card.value}</p>
-                <p>{card.description}</p>
-              </li>
-            ))}
-          </ul>
-
-          <section aria-label="Wellness status distribution">
-            <h3>Wellness status distribution</h3>
-            {summary.wellnessStatusDistribution.every((row) => row.count === 0) ? (
-              <p>No employees have submitted a wellness entry in the last 7 days.</p>
-            ) : (
-              <ul>
-                {summary.wellnessStatusDistribution.map((row) => (
-                  <li key={row.category}>
-                    {row.category}: {row.count}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section aria-label="Department wellness scores">
-            <h3>Department wellness scores</h3>
-            {summary.departmentWellnessScores.length === 0 ? (
-              <p>No departments in scope.</p>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Department</th>
-                    <th>Score</th>
-                    <th>Employees</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.departmentWellnessScores.map((row) => (
-                    <tr key={row.departmentId}>
-                      <td>{row.name}</td>
-                      <td>{row.score === null ? "—" : row.score}</td>
-                      <td>{row.employeeCount}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
-
-          <section aria-label="Weekly wellness trend">
-            <h3>Weekly wellness trend</h3>
-            {summary.weeklyWellnessTrends.every((point) => point.score === null) ? (
-              <p>No wellness entries in the last 7 days.</p>
-            ) : (
-              <>
-                <svg
-                  role="img"
-                  aria-label="Weekly wellness trend"
-                  width={CHART_WIDTH}
-                  height={CHART_HEIGHT}
-                  viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
-                >
-                  <polyline
-                    points={buildPolylinePoints(summary.weeklyWellnessTrends)}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  />
-                </svg>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Score</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.weeklyWellnessTrends.map((point) => (
-                      <tr key={point.date}>
-                        <td>{point.date}</td>
-                        <td>{point.score === null ? "—" : point.score}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-          </section>
-
-          <section aria-label="Top 5 high stress employees">
-            <h3>Top 5 high-stress employees</h3>
-            {summary.topHighStressEmployees.length === 0 ? (
-              <p>No employees with entries in the last 7 days.</p>
-            ) : (
-              <ol>
-                {summary.topHighStressEmployees.map((employee) => (
-                  <li key={employee.employeeId}>
-                    {employee.name ?? `Employee #${employee.employeeId}`} — stress {employee.stressLevel}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
+          <KpiCards cards={summary.kpiCards} />
+          <WellnessStatusDistribution rows={summary.wellnessStatusDistribution} />
+          <DepartmentWellnessScores rows={summary.departmentWellnessScores} />
+          <WeeklyTrendChart points={summary.weeklyWellnessTrends} />
+          <TopHighStressList employees={summary.topHighStressEmployees} />
         </>
       )}
     </section>

@@ -952,3 +952,36 @@ follow. Confirmed both ways: failed before the fix (reproduced, not just reporte
 `npx vitest run`: 165/165 frontend tests pass (143 prior + 9 dashboard live-verification + 4 + 3 + 5
 unit/RTL + 1 WellnessEntryForm case, minus the 2 pre-existing failures now fixed). `python
 ci_check.py`: 67 backend + 165 frontend tests, all green.
+
+**Fixes (iteration 2) — frontend:** Addressed both review findings.
+
+1. *Component too large.* `components/dashboard/DashboardSummary.jsx` (248 lines) exceeded this
+   project's per-component ceiling (largest prior component, `WellnessEntryForm.jsx`, is 242 lines;
+   most sit well under 200). Split it into five presentational children under
+   `components/dashboard/`: `DashboardScopeFilter.jsx` (the ADMIN-only scope/department form),
+   `KpiCards.jsx`, `WellnessStatusDistribution.jsx`, `DepartmentWellnessScores.jsx`,
+   `WeeklyTrendChart.jsx` (keeps the inline-SVG polyline logic), and `TopHighStressList.jsx`.
+   `DashboardSummary.jsx` itself is now a 142-line orchestrator holding only the fetch/state logic;
+   every child is 14–62 lines. No behavior, markup, or `aria-label`/`data-testid` changed, so the
+   existing `DashboardSummary.test.jsx` assertions (which query by role/label/testid, not by which
+   file rendered them) required no changes.
+2. *Admin department-scope flow could trigger a premature backend 400.* Switching the scope
+   selector to "Single department" immediately re-ran the fetch effect with `departmentId` still
+   `""`, and the backend's `GET /api/dashboard/summary` (S5 API Contract) requires a non-empty
+   `departmentId` whenever `scope=department` for an `ADMIN` — so every "department" scope
+   selection produced one guaranteed `400` before the user had a chance to pick a department.
+   Fixed by holding the fetch back (`awaitingDepartmentPick` guard in `DashboardSummary.jsx`)
+   whenever `scope === "department"` and `departmentId` is still empty, showing a "Select a
+   department to view its dashboard." prompt instead of firing the request or surfacing an error.
+   The fetch fires as soon as a real `departmentId` is selected, same as before. Added a
+   regression case to `DashboardSummary.test.jsx` ("switching to department scope holds the fetch
+   until a department is picked") proving no `/api/dashboard/summary` call fires on the scope
+   change alone, and that picking a department fires exactly one call with
+   `scope=department&departmentId=1`.
+
+Re-ran the full frontend suite, including `dashboardLiveBackendVerification.test.js` (still 9/9
+against the real backend Express app — this fix is UI-only and doesn't change any request the
+live-verification suite already covers, including its existing "a real 400 when scope=department
+is requested with no departmentId" case, which documents the exact backend behavior this frontend
+fix now avoids triggering prematurely). `npx vitest run`: 166/166 frontend tests pass (165 prior +
+1 new regression case). `python ci_check.py`: 70 backend + 166 frontend tests, all green.

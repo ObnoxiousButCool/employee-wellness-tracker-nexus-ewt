@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import DashboardSummary from "../components/dashboard/DashboardSummary";
 import { notifyWellnessEntrySubmitted } from "../lib/wellnessEvents";
 
@@ -117,6 +117,34 @@ describe("DashboardSummary", () => {
     render(<DashboardSummary role="MANAGER" />);
     await screen.findByTestId("kpi-Total Active Employees");
     expect(screen.queryByLabelText("Scope")).not.toBeInTheDocument();
+  });
+
+  test("switching to department scope holds the fetch until a department is picked (no premature 400)", async () => {
+    mockFetchImplementation();
+    render(<DashboardSummary role="ADMIN" />);
+    await screen.findByTestId("kpi-Total Active Employees");
+
+    const summaryCallsBefore = global.fetch.mock.calls.filter((c) => c[0].startsWith("/api/dashboard/summary")).length;
+
+    fireEvent.change(screen.getByLabelText("Scope"), { target: { value: "department" } });
+
+    expect(await screen.findByText(/select a department to view its dashboard/i)).toBeInTheDocument();
+
+    const summaryCallsAfterScopeChange = global.fetch.mock.calls.filter((c) => c[0].startsWith("/api/dashboard/summary")).length;
+    expect(summaryCallsAfterScopeChange).toBe(summaryCallsBefore);
+
+    const departmentSelect = await screen.findByLabelText("Department");
+    fireEvent.change(departmentSelect, { target: { value: "1" } });
+
+    await waitFor(() => {
+      const summaryCallsAfterPick = global.fetch.mock.calls.filter((c) => c[0].startsWith("/api/dashboard/summary")).length;
+      expect(summaryCallsAfterPick).toBe(summaryCallsBefore + 1);
+    });
+    const lastCallUrl = global.fetch.mock.calls
+      .filter((c) => c[0].startsWith("/api/dashboard/summary"))
+      .at(-1)[0];
+    expect(lastCallUrl).toContain("scope=department");
+    expect(lastCallUrl).toContain("departmentId=1");
   });
 
   test("refetches after a wellness-entry-submitted notification", async () => {
