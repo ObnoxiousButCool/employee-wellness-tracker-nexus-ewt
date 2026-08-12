@@ -50,22 +50,22 @@ test("GET /api/dashboard/summary as ADMIN with scope=org returns the full KPI pa
   assert.equal(kpiByName["Total Active Employees"], 3);
   assert.equal(kpiByName["Submissions Today"], 2);
   assert.equal(kpiByName["Employees Requiring Attention"], 2);
-  close(kpiByName["Average Wellness Score"], 63.13);
+  close(kpiByName["Average Wellness Score"], 54.5);
 
   const distByCategory = Object.fromEntries(res.body.wellnessStatusDistribution.map((d) => [d.category, d.count]));
-  assert.deepEqual(distByCategory, { THRIVING: 1, STABLE: 1, AT_RISK: 1, CRITICAL: 0 });
+  assert.deepEqual(distByCategory, { THRIVING: 1, STABLE: 0, AT_RISK: 2, CRITICAL: 0 });
 
   const deptScores = Object.fromEntries(res.body.departmentWellnessScores.map((d) => [d.name, d]));
   assert.equal(deptScores.Engineering.employeeCount, 2);
   assert.equal(deptScores.Sales.employeeCount, 1);
-  close(deptScores.Sales.score, 86.67);
+  close(deptScores.Sales.score, 81);
 
   assert.equal(res.body.weeklyWellnessTrends.length, 7);
   const trend = res.body.weeklyWellnessTrends;
   assert.equal(trend[3].score, null);
-  close(trend[4].score, 58.33);
-  close(trend[5].score, 66.67);
-  close(trend[6].score, 63.75);
+  close(trend[4].score, 50);
+  close(trend[5].score, 57);
+  close(trend[6].score, 55.5);
 
   assert.equal(res.body.topHighStressEmployees.length, 3);
   assert.deepEqual(

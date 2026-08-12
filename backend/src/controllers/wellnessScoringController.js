@@ -63,6 +63,13 @@ async function getEmployeeWellnessScores(req, res) {
     }
     if (req.query.department !== undefined) {
       departmentId = Number.parseInt(req.query.department, 10);
+      // Matches GET /api/departments/:departmentId/wellness/score's 404 on an
+      // unknown department -- an ADMIN filtering this list by a nonexistent
+      // department must not silently fall through to an empty { data: [] }.
+      const department = await prisma.department.findUnique({ where: { id: departmentId } });
+      if (!department) {
+        return res.status(404).json({ error: "Department not found" });
+      }
     }
   }
 

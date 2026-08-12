@@ -79,6 +79,12 @@ test("GET /api/wellness/scores as ADMIN with a malformed department returns 400"
   assert.ok(res.body.errors.department);
 });
 
+test("GET /api/wellness/scores as ADMIN with an unknown department returns 404, matching the department-score endpoint", async () => {
+  const { app, adminToken } = buildApp();
+  const res = await request(app).get("/api/wellness/scores?department=999").set("Authorization", `Bearer ${adminToken}`);
+  assert.equal(res.status, 404);
+});
+
 test("GET /api/wellness/scores as MANAGER ignores a client-supplied department and is scoped to their own", async () => {
   const { app } = buildApp();
   const token = signToken({ userId: 1, role: "MANAGER", departmentId: 1 });
