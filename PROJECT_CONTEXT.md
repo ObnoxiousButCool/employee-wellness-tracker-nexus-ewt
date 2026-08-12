@@ -1175,3 +1175,58 @@ backend + 194 frontend tests, all green.
 > `wellnessScoringApi.test.js`/`DepartmentWellness.test.jsx`; actual is 4/3, since one fewer
 > fetch-wrapper case and one fewer RTL case were needed than the draft assumed), bringing the
 > total from the drafted 196 to the actual 194.
+
+**Fixes (iteration 2) — frontend:** Addressed the single blocking review finding — `frontend/
+__tests__/wellnessScoringLiveBackendVerification.test.js` was 218 added lines, over this project's
+established 200-line-per-test-file ceiling (the same rule S2 iteration 2 and S4 iteration 3 split
+files for). The review's "unmet acceptance criteria" bullets (shared formula module, department
+null-not-zero state, classification categories surfaced, MANAGER server-side scope) describe
+behavior the iteration-1 code already implements correctly per the review's own summary — verified
+again by re-reading `WellnessDashboard.jsx`/`DepartmentWellness.jsx` during this fix: neither
+component computes a score or threshold client-side, both consume the backend's `score`/
+`classificationCategory`/`null` fields verbatim, and the department filter is rendered only for
+`role === "ADMIN"` while the backend itself ignores any client-supplied `department` for a
+`MANAGER` (API Contract 3e) — so no functional change was needed for those bullets, only the split.
+
+Extracted the shared setup into `frontend/__tests__/helpers/wellnessScoringFixtures.js` (fixture
+departments/users/entries, `token()`, `startWellnessScoringBackend()`, `req()`), then split the
+original file's 10 cases by endpoint: `wellnessScoringListLiveBackendVerification.test.js` (113
+lines, 6 tests — `GET /api/wellness/scores`: the exact-formula org-wide list, the omitted-no-
+entries row, the department filter + malformed-`400`, the MANAGER department-ignore case, the
+missing-cookie `401`, and the `EMPLOYEE` `403`) and
+`wellnessScoringDepartmentLiveBackendVerification.test.js` (82 lines, 4 tests — `GET /api/
+departments/:departmentId/wellness/score`: the `52` arithmetic-mean case, the `null`-not-`0` case,
+the MANAGER cross-department `403`, and the unknown-department `404`). No test was added, removed,
+or changed in behavior or assertions — this is a pure split, both files under the 200-line ceiling.
+
+While re-running the split suite, found the original file had no guard for this branch's own
+backend/src state: `story-s6-frontend` was cut before `story-s6-backend`'s routes
+(`departmentWellnessRoutes.js`, `wellnessScoringController.js`) were committed, so this branch's
+own tracked `backend/src` is still at its pre-S6 (S5) shape and lacks the two S6 routes entirely —
+running the live-backend suite against it 404s all 10 cases rather than exercising the documented
+contract, and `python ci_check.py` would fail on this branch alone as a result (reproduced before
+fixing: 8/10 failed with real `404`s, not the expected `200`/`401`/`403`/`404` shapes). This is the
+same situation `adminLiveBackendVerification.test.js` (S2 iteration 3) solved for the analogous
+admin-backend case. Added `wellnessScoringBackendAvailable` to the new fixtures helper (`fs.
+existsSync` on `backend/src/routes/departmentWellnessRoutes.js`) and wrapped both split files'
+`describe` blocks in `describe.skipIf(!wellnessScoringBackendAvailable)`, so the suite skips
+cleanly (not fails) when this branch's own `backend/src` lacks the S6 routes, and runs for real
+once the two layers are merged or both branches are checked out together.
+
+Re-verified end-to-end against the real S6 backend to confirm the split and the new guard didn't
+regress the original claim: temporarily materialized `backend/src` from `story-s6-backend` (`git
+checkout story-s6-backend -- backend/src`, uncommitted, never staged into this PR) and re-ran both
+split files — all 10 cases passed against the real `createApp()`, exercising the same acceptance
+criteria as the original iteration-1 entry (exact formula values 96/"Thriving", 8/"Critical",
+65/"Stable"; the omitted no-entries row; ADMIN department filtering and its `400`; the MANAGER
+department-ignore rule; the `52` department mean; the `null`-not-`0` empty-department case; the
+MANAGER cross-department `403`; and the `401`/`403`/`404` boundary cases). Then restored `backend/
+src` to its exact committed (pre-S6) state (`git checkout -- backend/src` plus deleting the three
+newly-materialized S6-only files) and confirmed `git diff --stat -- backend/` is empty — no backend
+changes leak into this frontend PR.
+
+`npx vitest run` in the branch's own committed state: 184 passed, 10 skipped (0 failed) — the 10
+skipped are exactly this suite's two files, skipping via the new guard rather than failing.
+`python ci_check.py`: passes clean (previously would have failed with 8 failures before this fix,
+reproduced above). Against the real S6 backend (temporarily materialized, not committed): 194/194,
+0 skipped, 0 failed.
