@@ -21,6 +21,8 @@ function ManagerDashboardContent() {
       <p>Signed in as user #{session.userId} (MANAGER).</p>
       <nav>
         <Link href="/manager/wellness/history">Team Wellness History</Link>
+        <Link href="/manager/wellness/scores">Team Wellness Scores</Link>
+        <Link href="/manager/department/wellness">Department Wellness Score</Link>
       </nav>
       <LogoutButton />
       <DashboardSummary role="MANAGER" />
