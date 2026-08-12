@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchWellnessHistory, submitWellnessEntry } from "../../lib/wellnessApi";
 import { MOOD_OPTIONS, ENERGY_LEVEL_OPTIONS } from "../../lib/wellnessOptions";
+import { notifyWellnessEntrySubmitted } from "../../lib/wellnessEvents";
 
 function todayDateString() {
   return new Date().toISOString().slice(0, 10);
@@ -94,6 +95,7 @@ export default function WellnessEntryForm() {
 
     setExistingEntryId(result.data.id);
     setSubmitState("success");
+    notifyWellnessEntrySubmitted();
   }
 
   if (loadState === "loading") {

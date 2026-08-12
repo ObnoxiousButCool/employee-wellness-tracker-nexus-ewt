@@ -1,6 +1,7 @@
 import Link from "next/link";
 import RoleGuard from "../../../components/RoleGuard";
 import LogoutButton from "../../../components/LogoutButton";
+import DashboardSummary from "../../../components/dashboard/DashboardSummary";
 import { getSession } from "../../../lib/session";
 import { ROLES } from "../../../lib/roles";
 
@@ -22,6 +23,7 @@ function ManagerDashboardContent() {
         <Link href="/manager/wellness/history">Team Wellness History</Link>
       </nav>
       <LogoutButton />
+      <DashboardSummary role="MANAGER" />
     </main>
   );
 }

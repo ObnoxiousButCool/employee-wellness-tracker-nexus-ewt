@@ -38,7 +38,13 @@ beforeAll(async () => {
   const { default: createApp } = await import("../../backend/src/app.js");
   const { createWellnessFakePrisma } = await import("./helpers/wellnessFakePrisma.js");
 
+  // entryDate is a @db.Date column, always stored at local midnight (S3);
+  // employeeProfileController's default range bounds are midnight-aligned
+  // too (S4 fix iteration 2). Fixture dates must match, or an entry dated
+  // "right now" (with a real time-of-day) falls after the midnight-aligned
+  // `to` bound and gets silently excluded depending on when the test runs.
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
   const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
 
   const prisma = createWellnessFakePrisma({

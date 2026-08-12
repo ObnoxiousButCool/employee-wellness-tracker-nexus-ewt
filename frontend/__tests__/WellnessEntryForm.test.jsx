@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import WellnessEntryForm from "../components/wellness/WellnessEntryForm";
+import { subscribeToWellnessEntrySubmitted } from "../lib/wellnessEvents";
 
 function fakeResponse({ ok, status, body }) {
   return { ok, status, json: async () => body };
@@ -109,6 +110,31 @@ describe("WellnessEntryForm", () => {
         body: JSON.stringify({ stressLevel: 5, workHours: 8, sleepHours: 7, mood: "GOOD", energyLevel: "HIGH" }),
       })
     );
+  });
+
+  test("notifies wellnessEvents subscribers after a successful submit, for dashboard refresh", async () => {
+    global.fetch
+      .mockResolvedValueOnce(fakeResponse({ ok: true, status: 200, body: { data: [] } }))
+      .mockResolvedValueOnce(
+        fakeResponse({
+          ok: true,
+          status: 200,
+          body: { id: 9, stressLevel: 5, workHours: 8, sleepHours: 7, mood: "GOOD", energyLevel: "HIGH" },
+        })
+      );
+
+    const onSubmitted = vi.fn();
+    const unsubscribe = subscribeToWellnessEntrySubmitted(onSubmitted);
+
+    render(<WellnessEntryForm />);
+    await screen.findByText(/haven't submitted/i);
+
+    fillForm();
+    fireEvent.click(screen.getByRole("button", { name: /save check-in/i }));
+
+    await screen.findByTestId("submit-success");
+    expect(onSubmitted).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 
   test("shows field-level errors from a 422 response without a generic banner", async () => {
