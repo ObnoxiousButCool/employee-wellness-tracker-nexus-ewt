@@ -924,3 +924,31 @@ and page-2 requests. No endpoint, model, or route changed — this is validation
 `wellnessReportsLiveBackendVerification.test.js`, confirmed present before this fix round too via
 `git stash` — a time-of-day-sensitive fixture in a frontend-owned test file, unrelated to this
 layer's changes and out of scope for this backend fix round).
+
+**Fixes (iteration 3) — backend:** Addressed both review findings.
+1. *`dashboardController.js` exceeded the 200-line ceiling (221 lines).* Split it into an
+   orchestrator plus a new `src/utils/dashboardMetrics.js` of pure per-section builder functions
+   (`buildKpiSection`, `buildWellnessStatusDistribution`, `buildDepartmentWellnessScores`,
+   `buildWeeklyWellnessTrends`, `buildTopHighStressEmployees`, `emptySummary`, plus the
+   `groupByUser`/`daysAgo`/`todayDateOnly` helpers) — no Prisma calls in that file, so each
+   section is now unit-testable without a fake DB. `dashboardController.js` is now 107 lines and
+   holds only request/scope orchestration; `dashboardMetrics.js` is 168 lines. No response shape,
+   field, or computed value changed.
+2. *A MANAGER's malformed `scope`/`departmentId` 400'd instead of being ignored.*
+   `getSummary` ran `validateDashboardSummaryQuery(req.query)` before branching on
+   `req.user.role`, so a MANAGER supplying e.g. `?scope=bogus` or `?departmentId=abc` got a `400`
+   even though the API Contract (3d) documents that a MANAGER's client-supplied scope/departmentId
+   is "ignored entirely." Reordered `getSummary` so the MANAGER branch is checked first and never
+   calls the validator at all — validation now only runs on the ADMIN branch, where the query value
+   is actually used. A MANAGER's request always resolves to their own department regardless of what
+   (if anything) was supplied, malformed or not.
+3. Added `tests/dashboardSummary.test.js` coverage: a positive-path ADMIN `scope=department`
+   test (asserts the 200 payload, department-scoped employee count, and that the other
+   department's high-stress employee never leaks in — the primary department-drill-down flow the
+   frontend's scope selector relies on, previously only exercised via its 400/404 error cases) and
+   a MANAGER request with `?scope=not-a-real-scope&departmentId=not-a-number` asserting `200` with
+   the scope still forced to the manager's own department, not a `400`.
+
+`node --test` in `backend/`: 72/72 passing (70 prior + 2 new). `python ci_check.py`: 72 backend +
+143 frontend tests (the same 2 pre-existing, unrelated frontend failures noted above, unchanged by
+this fix round).

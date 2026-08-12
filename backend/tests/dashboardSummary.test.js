@@ -75,6 +75,39 @@ test("GET /api/dashboard/summary as ADMIN with scope=org returns the full KPI pa
   assert.equal(res.body.topHighStressEmployees[0].name, "Dave Engineer");
 });
 
+test("GET /api/dashboard/summary as ADMIN with scope=department returns that department's KPI payload", async () => {
+  const { app, adminToken } = buildApp();
+  const res = await request(app)
+    .get("/api/dashboard/summary?scope=department&departmentId=1")
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.scope, "department");
+  assert.equal(res.body.departmentId, 1);
+
+  const kpiByName = Object.fromEntries(res.body.kpiCards.map((c) => [c.name, c.value]));
+  assert.equal(kpiByName["Total Active Employees"], 2);
+
+  assert.equal(res.body.departmentWellnessScores.length, 1);
+  assert.equal(res.body.departmentWellnessScores[0].name, "Engineering");
+  assert.equal(res.body.departmentWellnessScores[0].employeeCount, 2);
+
+  const ids = res.body.topHighStressEmployees.map((e) => e.employeeId);
+  assert.ok(!ids.includes(3), "Sales employee must never appear in an ADMIN's department-scoped summary");
+});
+
+test("GET /api/dashboard/summary as MANAGER ignores a malformed client-supplied scope/departmentId instead of 400ing", async () => {
+  const { app } = buildApp();
+  const token = signToken({ userId: 1, role: "MANAGER", departmentId: 1 });
+  const res = await request(app)
+    .get("/api/dashboard/summary?scope=not-a-real-scope&departmentId=not-a-number")
+    .set("Authorization", `Bearer ${token}`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.scope, "department");
+  assert.equal(res.body.departmentId, 1);
+});
+
 test("GET /api/dashboard/summary as MANAGER always scopes to their own department, ignoring a requested scope/departmentId", async () => {
   const { app } = buildApp();
   const token = signToken({ userId: 1, role: "MANAGER", departmentId: 1 });
