@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { fetchDepartments, updateDepartment } from "../../lib/adminApi";
 import DepartmentFormDialog from "./DepartmentFormDialog";
 import DepartmentDeactivationDialog from "./DepartmentDeactivationDialog";
@@ -98,6 +99,7 @@ export default function DepartmentManagement() {
                 <td>{department.isActive ? "Active" : "Inactive"}</td>
                 <td>{department.activeUserCount}</td>
                 <td>
+                  <Link href={`/admin/departments/${department.id}/wellness`}>Wellness Score</Link>
                   <button type="button" onClick={() => setDialog({ type: "form", mode: "edit", department })}>
                     Rename
                   </button>

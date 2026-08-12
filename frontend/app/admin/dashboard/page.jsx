@@ -23,6 +23,7 @@ function AdminDashboardContent() {
         <Link href="/admin/users">Manage Users</Link>
         <Link href="/admin/departments">Manage Departments</Link>
         <Link href="/admin/wellness/history">Wellness History</Link>
+        <Link href="/admin/wellness/scores">Wellness Scores</Link>
       </nav>
       <LogoutButton />
       <DashboardSummary role="ADMIN" />

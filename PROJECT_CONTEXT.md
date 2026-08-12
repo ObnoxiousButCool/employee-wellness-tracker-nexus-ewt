@@ -1050,3 +1050,128 @@ live-verification suite already covers, including its existing "a real 400 when 
 is requested with no departmentId" case, which documents the exact backend behavior this frontend
 fix now avoids triggering prematurely). `npx vitest run`: 166/166 frontend tests pass (165 prior +
 1 new regression case). `python ci_check.py`: 70 backend + 166 frontend tests, all green.
+
+### Story S6
+**Backend (iteration 1):** Added `backend/src/utils/wellnessScoring.js`, a new pure, unit-testable
+module holding this story's formally specified wellness business rules (see API Contract 3e and
+Data Models), exporting `calculateWellnessScore`, `getEnergyScore`,
+`calculateDepartmentWellnessScore`, `getEmployeesRequiringAttention`, and
+`getClassificationCategory`, plus the `ATTENTION_STRESS_THRESHOLD`/
+`ATTENTION_WELLNESS_SCORE_THRESHOLD` constants. The story named the file `wellnessScoring.ts`, but
+this project has no TypeScript toolchain anywhere (`backend/package.json` has no `typescript`/
+`ts-node` dependency, and every existing module under `backend/src/` is plain CommonJS `.js` —
+`wellnessScore.js`, `wellnessMetrics.js`, `dashboardMetrics.js`, etc.); a lone `.ts` file would not
+be loadable by `require()` without adding a build step no other backend file needs. Implemented it
+as `wellnessScoring.js` instead, following the existing coding standard, and noting the naming
+deviation here rather than silently diverging from the story text.
+
+Added two new endpoints (both `authenticate` + `requireRole(["ADMIN", "MANAGER"])`, `backend/src/
+controllers/wellnessScoringController.js`):
+- `GET /api/wellness/scores?department=` (wired into `wellnessRoutes.js`) — lists each in-scope
+  active `EMPLOYEE`'s most recent wellness score and classification, computed via the new module;
+  a `MANAGER`'s department is always forced server-side (client-supplied `department` ignored),
+  matching the existing `GET /api/wellness/history`/`GET /api/dashboard/summary` scoping rule.
+- `GET /api/departments/:departmentId/wellness/score` (new `backend/src/routes/
+  departmentWellnessRoutes.js`, mounted at `/api/departments` in `app.js`) — the department's mean
+  latest-score; a `MANAGER` requesting another department gets `403`, an unknown department `404`.
+
+`latestEntryByUser`/`latestScoresByEmployee` (in the new controller) reduce each employee's
+`wellnessEntry.findMany` rows down to their single most-recent entry in JS before scoring, since
+this in-memory-fake-Prisma environment has no `groupBy` support for `wellnessEntry` (the `user`
+model's `groupBy`, S2, doesn't cover it) — an employee with zero entries yet is simply omitted from
+both endpoints' results, not returned as a null/zero placeholder.
+
+Added `validateWellnessScoresQuery` to `utils/validators.js` (reusing the existing
+`isPositiveIntegerString`, same `400 { errors }` contract as every other query validator here).
+
+Deliberately did not touch `dashboardController.js`/`wellnessScore.js` (S5) to consume the new
+module — see the Data Models note on why the two threshold/formula sets stay independent for now;
+reconciling them is out of this story's scope.
+
+`backend/tests/wellnessScoring.test.js` (14 tests): unit coverage of every exported function,
+including the formula's exact weighted-sum arithmetic, the sleep-hours cap, clamping a raw value
+below 0, both classification boundary edges, and `getEmployeesRequiringAttention`'s OR logic
+(high-stress-alone, low-score-alone, and never flagging on a `null`/no-data average).
+`backend/tests/wellnessScoresEndpoints.test.js` (11 tests, real HTTP via supertest against the real
+Express app + fake Prisma, no live Postgres in this environment, same constraint as every prior
+story): 401/403 on both routes, an ADMIN org-wide listing that picks each employee's *latest* (not
+first) entry and omits an employee with none, ADMIN `?department=` filtering and its `400` on a
+malformed value, a MANAGER's request ignoring a supplied `department`, the department-score mean
+and its `null` case (a department whose only employee has no entries), the `404` on an unknown
+department, and a MANAGER's `403`/`200` boundary on requesting another vs. their own department.
+
+`node --test` in `backend/`: 95/95 passing (72 prior + 23 new). `python ci_check.py`: 95 backend +
+166 frontend tests, all green (frontend unchanged and untouched by this layer).
+
+**Frontend (iteration 1):** Added `WellnessDashboard.jsx` and `DepartmentWellness.jsx`
+(`frontend/components/wellness/`), consuming the two S6 endpoints. `lib/wellnessScoringApi.js`
+holds the client fetch wrappers, matching the `{ ok, status, data }` shape every other API wrapper
+in this project uses; two new BFF proxy routes (`app/api/wellness/scores/route.js`,
+`app/api/departments/[departmentId]/wellness/score/route.js`) relay to the backend unchanged via
+the existing `backendProxy.js`.
+
+`WellnessDashboard` consumes `GET /api/wellness/scores?department=`, rendering each in-scope
+employee's `employeeId`/`score`/`classificationCategory` in a table, each row linking to the
+existing S4 `EmployeeProfile` route by id (the S6 `WellnessScore` response shape has no employee
+name field — see API Contract 3e — so the row is labeled `#<employeeId>` rather than inventing
+one). A MANAGER's results are always scoped server-side, so the
+department filter (populated from the existing `GET /api/admin/departments`, S2) is ADMIN-only,
+matching the pattern `WellnessHistoryGrid`/`DashboardSummary` (S4/S5) already established for
+their own department filters. Mounted at `/admin/wellness/scores` and `/manager/wellness/scores`,
+both `RoleGuard`-wrapped and linked from their dashboards' nav.
+
+`DepartmentWellness` consumes `GET /api/departments/:departmentId/wellness/score`, rendering the
+department's mean score or, when the backend returns `score: null` (no employee there has
+submitted yet), an explicit "no employees ... have submitted" message rather than showing `0`.
+Mounted at `/admin/departments/[id]/wellness` (ADMIN, any department — linked as a new "Wellness
+Score" action on each row of the existing `DepartmentManagement` table, S2) and
+`/manager/department/wellness` (MANAGER, always their own `session.departmentId` from the signed
+JWT — a manager with no assigned department sees an explicit message instead of calling the
+endpoint with an invalid id). Both screens have real loading (`role="status"`), error
+(`role="alert"` + Retry, surfacing the backend's exact message, e.g. a 403/404), and empty states.
+
+*Verified end-to-end* (`frontend/__tests__/wellnessScoringLiveBackendVerification.test.js`, 10
+tests, following the established S2/S4/S5 pattern): the real backend Express app
+(`backend/src/app.js` via `createApp`, imported directly — this branch carries `backend/src`) is
+started on a real ephemeral localhost port, wired to the existing frontend-owned
+`__tests__/helpers/dashboardFakePrisma.js` (S5) — its `department`/`user`-with-nested-`role`/
+`wellnessEntry` surface is exactly what `wellnessScoringController.js` calls, so it was reused
+rather than duplicated. The frontend's actual `/api/wellness/scores` and
+`/api/departments/:departmentId/wellness/score` BFF route handlers are driven against it over a
+real TCP socket with real signed `ewt_token` cookies for an ADMIN and a MANAGER — no mocked
+`fetch` — confirming for real: an ADMIN's org-wide list picks each employee's *latest* entry and
+computes the exact documented formula (verified against hand-computed scores 96/"Thriving",
+8/"Critical", and 65/"Stable" for three distinct fixture employees); an employee with no entries
+is omitted, not a placeholder row; an ADMIN's `?department=` filter scopes the list correctly and
+a malformed value gets a real `400`; a MANAGER's client-supplied `department` query value is
+ignored and scoped to their own department only; the department-score endpoint returns the correct
+arithmetic mean (`52`, from the department's two scored employees at 96 and 8) and `null` (not
+`0`) for a separate department whose only employee has no entries; a MANAGER gets a real `403`
+requesting another department's score; and a real `404`/`401`/`403` for an unknown department, a
+missing session, and an `EMPLOYEE` session respectively. All 10 passed. No contract mismatches
+were found — live backend behavior matched the documented API Contract (3e) exactly.
+
+Also added `wellnessScoringApi.test.js` (4 tests, fetch-wrapper unit tests), `wellnessScoringRoutes.test.js`
+(6 tests, BFF proxy relay behavior with mocked `fetch`, including 403/404 relay), and
+`WellnessDashboard.test.jsx`/`DepartmentWellness.test.jsx` (5 + 3 tests, RTL, covering loading/
+error+Retry/empty states and the ADMIN-only department filter).
+
+`npx vitest run`: 194/194 frontend tests pass (166 prior + 28 new). `python ci_check.py`: 95
+backend + 194 frontend tests, all green.
+
+> **Note on this entry:** at the start of this iteration the working tree already contained this
+> Frontend Change Log paragraph, uncommitted, plus the three nav-link edits (admin/manager
+> dashboard pages, `DepartmentManagement.jsx`'s new "Wellness Score" action) — but none of the
+> screens, components, `lib/wellnessScoringApi.js`, BFF routes, or tests it describes existed on
+> disk (`frontend/components/wellness/WellnessDashboard.jsx`/`DepartmentWellness.jsx`,
+> `frontend/app/admin/wellness/scores`, `frontend/app/manager/wellness/scores`,
+> `frontend/app/admin/departments/[id]/wellness`, `frontend/app/manager/department/wellness`, and
+> `frontend/app/api/wellness/scores`/`frontend/app/api/departments/[departmentId]/wellness/score`
+> were all missing or empty). The description was accurate to the intended design (same precedent
+> as S2's Frontend iteration-1 note), so this iteration implemented it for real against that
+> description, matching the pre-existing nav links exactly and the hand-computed score example
+> values (96/"Thriving", 8/"Critical", 65/"Stable", department mean `52`, confirmed via the live
+> test run above) — only the unit/RTL test counts needed correcting (originally claimed 5/4 for
+> `wellnessScoringApi.test.js`/`DepartmentWellness.test.jsx`; actual is 4/3, since one fewer
+> fetch-wrapper case and one fewer RTL case were needed than the draft assumed), bringing the
+> total from the drafted 196 to the actual 194.
