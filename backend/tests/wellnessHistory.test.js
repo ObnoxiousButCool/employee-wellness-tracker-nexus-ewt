@@ -164,3 +164,39 @@ test("GET /api/wellness/history returns 400 for an invalid sortBy", async () => 
   assert.equal(res.status, 400);
   assert.ok(res.body.errors.sortBy);
 });
+
+test("GET /api/wellness/history returns 400 for userId=0, not the first user", async () => {
+  const { app, adminToken } = buildApp();
+  const res = await request(app)
+    .get("/api/wellness/history?userId=0")
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  assert.equal(res.status, 400);
+  assert.ok(res.body.errors.userId);
+});
+
+test("GET /api/wellness/history returns 400 for a whitespace-padded userId instead of silently trimming it", async () => {
+  const { app, adminToken } = buildApp();
+  const res = await request(app)
+    .get("/api/wellness/history?userId=%202%20")
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  assert.equal(res.status, 400);
+  assert.ok(res.body.errors.userId);
+});
+
+test("GET /api/wellness/history breaks ties on entryDate deterministically by id, across paginated pages", async () => {
+  const { app, adminToken } = buildApp();
+  const page1 = await request(app)
+    .get("/api/wellness/history?sortBy=entryDate&sortOrder=desc&page=1&pageSize=1")
+    .set("Authorization", `Bearer ${adminToken}`);
+  const page2 = await request(app)
+    .get("/api/wellness/history?sortBy=entryDate&sortOrder=desc&page=2&pageSize=1")
+    .set("Authorization", `Bearer ${adminToken}`);
+
+  // Entries 2 and 3 tie on entryDate (2026-01-02); the id-ascending
+  // tiebreaker must place id 2 before id 3 on every request, so paging
+  // through one row at a time neither skips nor repeats a row.
+  assert.equal(page1.body.data[0].id, 2);
+  assert.equal(page2.body.data[0].id, 3);
+});

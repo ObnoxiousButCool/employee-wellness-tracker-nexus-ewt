@@ -887,3 +887,40 @@ high-stress list. No new tables — every field is a read-model shape computed f
 
 `node --test` in `backend/`: 67/67 passing (53 prior + 14 new). `python ci_check.py`: 67 backend +
 143 frontend tests, all green (frontend unchanged and untouched by this layer).
+
+**Fixes (iteration 2) — backend:** Addressed both review findings, both in
+`src/utils/validators.js`'s shared `isPositiveIntegerString()` — used by every id/`userId`/
+`department`/`departmentId` query-and-path-param check across S4 and S5 (`wellnessHistoryController`,
+`enforceEmployeeDepartmentScope`, `validateDashboardSummaryQuery`), so the fix closes the gap
+everywhere it's used, not just in the dashboard endpoint.
+
+1. *`0` accepted as a valid id.* The regex was `^\d+$`, which matches `"0"` — but `0` is never a
+   real row id (every PK here is an autoincrement starting at 1), so `?userId=0` or
+   `/employees/0/profile` was silently treated as a well-formed (if nonexistent) id instead of a
+   malformed one. Changed the regex to `^[1-9]\d*$` (also incidentally rejecting ambiguous
+   leading-zero forms like `"007"`).
+2. *Whitespace-padded ids silently trimmed.* `isPositiveIntegerString` ran `value.trim()` before
+   testing, so `"?userId= 2 "` (URL-encoded as `%202%20`) was accepted and silently normalized to
+   `2` rather than rejected as malformed — inconsistent with every other validator in this file,
+   none of which trim numeric input. Removed the `.trim()` so a whitespace-padded value now fails
+   validation like any other malformed string.
+3. *Non-deterministic pagination on tied sort keys.* `GET /api/wellness/history`'s
+   `wellnessHistoryController.getHistory` ordered strictly by `orderBy: { [sortBy]: sortOrder }` —
+   a single column. Rows sharing that column's value (e.g. two entries with the same `entryDate`)
+   have no guaranteed relative order from the database across separate paginated requests, so a
+   client paging through tied rows could see a row repeated on one page and skipped on the next.
+   Added a secondary `{ id: "asc" }` tiebreaker: `orderBy: [{ [sortBy]: sortOrder }, { id: "asc" }]`
+   (Prisma's array form for multi-field sort). Extended `tests/helpers/fakePrisma.js`'s
+   `wellnessEntry.findMany` to support an `orderBy` array (previously single-object only),
+   evaluating each clause in order and falling through to the next on a tie.
+
+Added regression coverage in `tests/wellnessHistory.test.js`: `userId=0` → `400`; a whitespace-padded
+`userId` (`%202%20`) → `400`; and a same-`entryDate`-tie test that pages through the two tied fixture
+rows one at a time and asserts the `id`-ascending order is identical and stable across both page-1
+and page-2 requests. No endpoint, model, or route changed — this is validation/ordering-logic only.
+
+`node --test` in `backend/`: 70/70 passing (67 prior + 3 new). `python ci_check.py`: 70 backend +
+143 frontend tests (2 pre-existing frontend failures in
+`wellnessReportsLiveBackendVerification.test.js`, confirmed present before this fix round too via
+`git stash` — a time-of-day-sensitive fixture in a frontend-owned test file, unrelated to this
+layer's changes and out of scope for this backend fix round).
