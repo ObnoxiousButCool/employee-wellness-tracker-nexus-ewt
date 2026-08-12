@@ -20,13 +20,6 @@ import jwt from "jsonwebtoken";
  * forced to their own department even when a different one is requested,
  * an ADMIN's org-wide vs single-department scope, and the documented
  * 400/404 error responses.
- *
- * Re-verified in S7 fix iteration 2 (`npx vitest run
- * __tests__/dashboardLiveBackendVerification.test.js
- * __tests__/wellnessReportsLiveBackendVerification.test.js`, 19/19 passing)
- * against backend commit a1b5057, the `backend/src` tree actually present on
- * this branch -- closing the review finding that the prior iteration's
- * Change Log entry asserted this re-run with no corroborating diff.
  */
 
 const TEST_JWT_SECRET = "dashboard-live-verification-secret";
@@ -202,5 +195,21 @@ describe("frontend <-> real backend/src/app.js dashboard summary route (real Exp
     const cookie = `ewt_token=${token(empAId, "EMPLOYEE", engineeringId)}`;
     const res = await GET(req("http://localhost:3000/api/dashboard/summary", cookie));
     expect(res.status).toBe(403);
+  });
+
+  // S7 data-protection requirement: no sensitive field (password hash, raw
+  // token) may ever be serialized into an API response. Asserted here
+  // against the real live-backend response body, not just by reading the
+  // controller source, so a future regression that widens the serialized
+  // shape fails this suite.
+  test("ADMIN org-wide response never serializes a passwordHash or raw token for any employee", async () => {
+    const GET = await importSummaryRoute();
+    const cookie = `ewt_token=${token(99, "ADMIN", null)}`;
+    const res = await GET(req("http://localhost:3000/api/dashboard/summary?scope=org", cookie));
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    expect(raw).not.toMatch(/passwordHash/i);
+    expect(raw).not.toMatch(/ewt_token/i);
+    expect(res.headers.get("set-cookie")).toBeNull();
   });
 });
