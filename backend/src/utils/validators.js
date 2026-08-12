@@ -239,6 +239,15 @@ function validateDashboardSummaryQuery(query) {
   return errors;
 }
 
+/** Validates the query of GET /api/wellness/scores. */
+function validateWellnessScoresQuery(query) {
+  const errors = {};
+  if (query.department !== undefined && !isPositiveIntegerString(query.department)) {
+    errors.department = "department must be an integer";
+  }
+  return errors;
+}
+
 module.exports = {
   validateCreateUser,
   validateUpdateUser,
@@ -250,6 +259,7 @@ module.exports = {
   validateWellnessHistoryQuery,
   validateTrendQuery,
   validateDashboardSummaryQuery,
+  validateWellnessScoresQuery,
   isPositiveIntegerString,
   MOOD_VALUES,
   ENERGY_LEVEL_VALUES,
