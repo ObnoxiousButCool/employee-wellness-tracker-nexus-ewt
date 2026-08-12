@@ -887,3 +887,68 @@ high-stress list. No new tables — every field is a read-model shape computed f
 
 `node --test` in `backend/`: 67/67 passing (53 prior + 14 new). `python ci_check.py`: 67 backend +
 143 frontend tests, all green (frontend unchanged and untouched by this layer).
+
+**Frontend (iteration 1):** Added `components/dashboard/DashboardSummary.jsx`, consuming
+`GET /api/dashboard/summary` (S5) end to end, rendered on both `/admin/dashboard` and
+`/manager/dashboard` (`<DashboardSummary role="ADMIN"|"MANAGER">`). Added the BFF proxy
+`app/api/dashboard/summary/route.js` (forwards the query string unchanged via the existing
+`backendProxy.js` relay) and `lib/dashboardApi.js` (client fetch wrapper, `{ ok, status, data }`
+shape matching `wellnessReportsApi.js`). Renders every section the contract documents: the four
+KPI cards, wellness status distribution, a department-scores table, a 7-point weekly trend (inline
+SVG polyline plus an accessible data table, same no-new-dependency approach `TrendChart.jsx` used
+in S4), and the top-5 high-stress list. `ADMIN` gets an org/department scope selector (backed by
+the existing `GET /api/admin/departments` from S2) that re-fetches on change; `MANAGER` never sees
+it, since the backend ignores a `MANAGER`'s scope/departmentId entirely (matching the pattern
+`WellnessHistoryGrid.jsx`, S4, already established for its own department filter). Has real
+loading (`role="status"`), error (`role="alert"` + Retry, surfacing the backend's own message), and
+per-section empty states (no fifth "unclassified" distribution bucket, "no departments in scope",
+no trend data, no high-stress entries) — not just a single happy path.
+
+*Refresh mechanism:* added `lib/wellnessEvents.js`, a same-tab `CustomEvent` pub/sub (no shared
+query cache/store exists in this project, and the story calls for invalidation/refetch rather than
+a polling loop). `WellnessEntryForm.jsx` (S3) now calls `notifyWellnessEntrySubmitted()` immediately
+after a successful `POST /api/wellness/entries`, and `DashboardSummary` subscribes to it in a
+`useEffect`, so any dashboard mounted in the same tab refetches its summary right after a check-in
+is saved — no manual reload. Covered by a new `WellnessEntryForm.test.jsx` case (submit → subscriber
+notified) and a `DashboardSummary.test.jsx` case (`notifyWellnessEntrySubmitted()` → a second
+`/api/dashboard/summary` fetch fires).
+
+*Verified end-to-end* (`frontend/__tests__/dashboardLiveBackendVerification.test.js`, 9 tests,
+following the established S2/S4 pattern): the real backend Express app (`backend/src/app.js` via
+`createApp`, imported directly — this branch was cut from `story-s5-backend` so `backend/src` is
+present) is started on a real ephemeral localhost port, wired to a new frontend-owned in-memory
+Prisma fake, `__tests__/helpers/dashboardFakePrisma.js` (`department`/`user`-with-nested-`role`/
+`wellnessEntry`, the exact surface `dashboardController.js` calls — not the backend's own
+`fakePrisma.js`, same reasoning as `wellnessFakePrisma.js`, S4 fix iteration 2). The frontend's
+actual `/api/dashboard/summary` BFF route handler is driven against it over a real TCP socket with
+real signed `ewt_token` cookies for a `MANAGER` and an `ADMIN` — no mocked `fetch` — confirming for
+real: a `MANAGER`'s scope/departmentId are forced to their own department even when
+`scope=org&departmentId=<other department>` is requested, and that department's other employees
+never leak into a different department's data; the top-high-stress ranking and the "Employees
+Requiring Attention" KPI reflect real averaged `stressLevel` over seeded entries; the 7-point
+weekly trend has today's (non-null) score last; an `ADMIN`'s `scope=org` sees all employees across
+every department while `scope=department` scopes correctly; a real `404` for an unknown
+`departmentId`; a real `400` when `scope=department` is requested with no `departmentId`; a real
+`401` with no session cookie; and a real `403` for an `EMPLOYEE` session. All 9 passed. No contract
+mismatches were found — live backend behavior matched the documented API Contract exactly.
+
+Also added `dashboardApi.test.js` (4 tests, fetch-wrapper unit tests) and `dashboardRoutes.test.js`
+(3 tests, BFF proxy relay behavior with mocked `fetch`, including 403/404 relay), plus
+`DashboardSummary.test.jsx` (5 tests, RTL: loading/error+Retry/empty states, the ADMIN-only scope
+selector, and the refetch-on-submit case above).
+
+*Pre-existing test bug found and fixed (not a contract mismatch, not backend code):* while running
+the full frontend suite before this change, `wellnessReportsLiveBackendVerification.test.js` (S4)
+failed 2 of its 10 cases (`entryCount`/trend-series length off by one). Root cause: its fixture
+seeded `entryDate: new Date()` (a real, current timestamp) for a "today" entry, but
+`entryDate` is a `@db.Date` column always stored/compared at local midnight (S3, and
+`employeeProfileController.js`'s own midnight-aligned default range bounds, S4 fix iteration 2) —
+so any run after midnight excluded that entry from the default-range query, depending on wall-clock
+time. This is a test-fixture bug in a file this layer owns (`frontend/__tests__/`), not a backend
+defect, so it was fixed here: zeroed the fixture's `today`/`yesterday` to midnight
+(`today.setHours(0, 0, 0, 0)`), matching the pattern this file's own header already claims to
+follow. Confirmed both ways: failed before the fix (reproduced, not just reported), passes after.
+
+`npx vitest run`: 165/165 frontend tests pass (143 prior + 9 dashboard live-verification + 4 + 3 + 5
+unit/RTL + 1 WellnessEntryForm case, minus the 2 pre-existing failures now fixed). `python
+ci_check.py`: 67 backend + 165 frontend tests, all green.

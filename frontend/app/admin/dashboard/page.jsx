@@ -1,6 +1,7 @@
 import Link from "next/link";
 import RoleGuard from "../../../components/RoleGuard";
 import LogoutButton from "../../../components/LogoutButton";
+import DashboardSummary from "../../../components/dashboard/DashboardSummary";
 import { getSession } from "../../../lib/session";
 import { ROLES } from "../../../lib/roles";
 
@@ -24,6 +25,7 @@ function AdminDashboardContent() {
         <Link href="/admin/wellness/history">Wellness History</Link>
       </nav>
       <LogoutButton />
+      <DashboardSummary role="ADMIN" />
     </main>
   );
 }
