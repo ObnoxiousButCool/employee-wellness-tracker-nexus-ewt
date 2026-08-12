@@ -2,6 +2,7 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const adminRoutes = require("./routes/adminRoutes");
 const wellnessRoutes = require("./routes/wellnessRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 const defaultPrisma = require("./config/prisma");
 
 /**
@@ -18,6 +19,7 @@ function createApp({ prisma = defaultPrisma } = {}) {
 
   app.use("/api/admin", adminRoutes);
   app.use("/api/wellness", wellnessRoutes);
+  app.use("/api/dashboard", dashboardRoutes);
 
   app.use((req, res) => {
     res.status(404).json({ error: "Not found" });

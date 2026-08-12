@@ -16,15 +16,19 @@ function isNumberInRange(value, min, max) {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
-const POSITIVE_INTEGER_RE = /^\d+$/;
+// No leading zeros and no leading "0" itself — "0" is not a positive
+// integer, and "01"/"007" are ambiguous re-encodings of a plain int.
+const POSITIVE_INTEGER_RE = /^[1-9]\d*$/;
 
 /**
  * Strictly validates that a raw query/path string is an exact positive
  * integer — unlike Number.parseInt, which stops at the first non-digit
- * character and silently accepts "12abc" as 12.
+ * character and silently accepts "12abc" as 12. Deliberately does not
+ * trim: a whitespace-padded value (e.g. " 12") is malformed input, not a
+ * value to silently normalize before it reaches a WHERE clause.
  */
 function isPositiveIntegerString(value) {
-  return typeof value === "string" && POSITIVE_INTEGER_RE.test(value.trim());
+  return typeof value === "string" && POSITIVE_INTEGER_RE.test(value);
 }
 
 /**
@@ -213,6 +217,28 @@ function validateTrendQuery(query) {
   return errors;
 }
 
+const DASHBOARD_SCOPES = ["org", "department"];
+
+/**
+ * Validates the query of GET /api/dashboard/summary. departmentId's format
+ * is checked whenever present; it's additionally required when scope is
+ * "department". A MANAGER's scope/departmentId are forced server-side in
+ * the controller regardless of what's supplied here (same pattern as
+ * validateWellnessHistoryQuery), so this only guards well-formedness.
+ */
+function validateDashboardSummaryQuery(query) {
+  const errors = {};
+  if (query.scope !== undefined && !DASHBOARD_SCOPES.includes(query.scope)) {
+    errors.scope = `scope must be one of: ${DASHBOARD_SCOPES.join(", ")}`;
+  }
+  if (query.departmentId !== undefined && !isPositiveIntegerString(query.departmentId)) {
+    errors.departmentId = "departmentId must be an integer";
+  } else if (query.scope === "department" && query.departmentId === undefined) {
+    errors.departmentId = "departmentId is required when scope is department";
+  }
+  return errors;
+}
+
 module.exports = {
   validateCreateUser,
   validateUpdateUser,
@@ -223,11 +249,13 @@ module.exports = {
   validateDateRangeQuery,
   validateWellnessHistoryQuery,
   validateTrendQuery,
+  validateDashboardSummaryQuery,
   isPositiveIntegerString,
   MOOD_VALUES,
   ENERGY_LEVEL_VALUES,
   HISTORY_SORTABLE_FIELDS,
   TREND_METRICS,
   TREND_RANGES,
+  DASHBOARD_SCOPES,
   DATE_RE,
 };
