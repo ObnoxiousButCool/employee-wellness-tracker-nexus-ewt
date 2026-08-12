@@ -6,6 +6,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const entriesController = require("../controllers/wellnessEntriesController");
 const historyController = require("../controllers/wellnessHistoryController");
 const employeeProfileController = require("../controllers/employeeProfileController");
+const scoringController = require("../controllers/wellnessScoringController");
 
 const router = express.Router();
 
@@ -34,5 +35,9 @@ router.get(
   enforceEmployeeDepartmentScope,
   asyncHandler(employeeProfileController.getTrend)
 );
+
+// S6: employee wellness score list, same department-scoping rules as
+// /history and /dashboard/summary above.
+router.get("/scores", requireManagerOrAdmin, asyncHandler(scoringController.getEmployeeWellnessScores));
 
 module.exports = router;
