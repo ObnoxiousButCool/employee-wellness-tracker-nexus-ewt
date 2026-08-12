@@ -166,4 +166,26 @@ describe("frontend <-> real backend/src/app.js wellness reporting routes (real E
     });
     expect(res.status).toBe(400);
   });
+
+  // S7 data-protection requirement: no sensitive field (password hash, raw
+  // token) may ever be serialized into an API response. Asserted against the
+  // real live-backend response body for both the history grid and the
+  // employee profile, not just by reading the controller source.
+  test("history and employee-profile responses never serialize a passwordHash or raw token", async () => {
+    const { GET: getHistory } = await import("../app/api/wellness/history/route.js");
+    const historyRes = await getHistory(req(`/api/wellness/history`, adminToken));
+    expect(historyRes.status).toBe(200);
+    const historyRaw = await historyRes.text();
+    expect(historyRaw).not.toMatch(/passwordHash/i);
+    expect(historyRaw).not.toMatch(/ewt_token/i);
+
+    const { GET: getProfile } = await import("../app/api/wellness/employees/[id]/profile/route.js");
+    const profileRes = await getProfile(req(`/api/wellness/employees/${employeeAId}/profile`, managerToken), {
+      params: { id: String(employeeAId) },
+    });
+    expect(profileRes.status).toBe(200);
+    const profileRaw = await profileRes.text();
+    expect(profileRaw).not.toMatch(/passwordHash/i);
+    expect(profileRaw).not.toMatch(/ewt_token/i);
+  });
 });
